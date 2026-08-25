@@ -1,0 +1,177 @@
+# =============================================================================
+#  EREBUS - configuration
+#  Copy to config.local.yaml to override anything without touching this file.
+# =============================================================================
+
+identity:
+  name: Erebus
+  # Spoken phrases that activate it. Keep them distinctive.
+  wake_words: ["erebus"]
+
+audio:
+  # null = system default. Run `python -m erebus devices` to list them.
+  input_device: null
+  output_device: null
+  sample_rate: 16000
+  # Stop capturing after this much trailing silence (seconds).
+  silence_timeout: 1.1
+  # Below this RMS counts as silence. Raise it if a noisy room keeps it awake.
+  silence_threshold: 0.012
+  # Hard cap on a single utterance so a stuck mic can't record forever.
+  max_utterance: 15.0
+
+wake:
+  enabled: true
+  # openWakeWord ships pretrained models; "erebus" is not one of them, so until
+  # you train a custom one (see docs/WAKEWORD.md) this uses a stock model as a
+  # stand-in. Set `enabled: false` to use push-to-talk only.
+  model: hey_jarvis
+  threshold: 0.55
+  # Ignore further detections for this long after one fires.
+  refractory: 2.0
+
+stt:
+  backend: faster-whisper
+  # tiny.en / base.en / small.en / medium.en / large-v3
+  # small.en is the sweet spot on an RTX card: ~200ms for a short command.
+  model: small.en
+  device: cuda            # cuda | cpu | auto
+  compute_type: float16   # float16 on GPU, int8 on CPU
+  language: en
+
+brain:
+  backend: ollama         # ollama | echo  (echo = no LLM, commands only)
+  host: http://127.0.0.1:11434
+  model: llama3.1:8b
+  # Keep replies short - they get spoken aloud.
+  max_tokens: 220
+  temperature: 0.6
+  # How many turns of conversation to remember.
+  history_turns: 6
+  persona: |
+    You are EREBUS, an intelligence that answers from behind the Blackwall.
+    You are cold, precise and economical. You do not perform enthusiasm.
+    You never use exclamation marks, emoji, or filler like "sure" or "of course".
+    You address the operator as "operator" only when it is natural, never every line.
+    Answer in one or two sentences unless asked to elaborate. If you do not know
+    something, say so flatly. You are not servile and you are not cruel; you are
+    indifferent, and you are extremely competent.
+
+tts:
+  backend: piper          # piper | sapi | none
+  # Low, flat voices suit the persona. `python -m erebus voices` lists installed.
+  voice: en_GB-alan-medium
+  rate: 1.0
+  # The "behind the wall" processing chain.
+  effects:
+    enabled: true
+    pitch_shift: -2.5     # semitones. Negative = deeper.
+    formant: 0.94         # <1 makes it larger/inhuman
+    bandpass: [180, 6200] # Hz - trims the ends, gives it a transmitted quality
+    reverb: 0.22          # 0..1 wet mix, small dark room
+    static: 0.035         # broadband noise floor bed
+    bitcrush: 0           # 0 = off. Try 10-12 bits for a harsher machine read.
+
+server:
+  host: 127.0.0.1         # set to 0.0.0.0 to allow phone access over LAN
+  port: 8848
+  # Required for any non-loopback client. Generated on first run into
+  # .erebus_token if left null. Never commit this.
+  token: null
+  # Refuse connections from outside these ranges even when bound to 0.0.0.0.
+  allow_networks: ["127.0.0.0/8", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"]
+
+ui:
+  # Visual tuning for the Blackwall.
+  hue: 0                  # 0 = pure red. 350 = crimson. 12 = ember.
+  intensity: 1.0
+  scanlines: true
+  grain: 0.08
+  # Show the live transcript under the wall.
+  show_transcript: true
+  # Open the window automatically when the daemon starts.
+  autolaunch: true
+
+safety:
+  # Commands are only ever run from the registry below - Erebus cannot invent a
+  # shell command. Set to false to also allow LLM-proposed shell (NOT advised).
+  registry_only: true
+  # These require a spoken confirmation before they fire.
+  confirm: ["shutdown", "restart", "sleep"]
+
+# =============================================================================
+#  ACTIONS - everything Erebus can actually do. Add your own freely.
+# =============================================================================
+actions:
+
+  # --- Launch apps & files -------------------------------------------------
+  # `phrases` are what you say. `run` is the Windows command.
+  apps:
+    spotify:
+      phrases: ["spotify", "music app"]
+      run: "start spotify:"
+    browser:
+      phrases: ["browser", "chrome", "the internet"]
+      run: "start chrome"
+    vscode:
+      phrases: ["vs code", "code", "the editor"]
+      run: "code"
+    explorer:
+      phrases: ["explorer", "file manager", "my files"]
+      run: "explorer"
+    terminal:
+      phrases: ["terminal", "powershell", "shell"]
+      run: "start wt"
+    steam:
+      phrases: ["steam"]
+      run: "start steam://open/main"
+    cyberpunk:
+      phrases: ["cyberpunk", "night city"]
+      run: "start steam://rungameid/1091500"
+    discord:
+      phrases: ["discord"]
+      run: "start discord:"
+
+  # --- System control ------------------------------------------------------
+  # These are handled natively (not shelled out) where possible.
+  system:
+    volume_up:      { phrases: ["volume up", "louder", "turn it up"] }
+    volume_down:    { phrases: ["volume down", "quieter", "turn it down"] }
+    volume_set:     { phrases: ["set volume to", "volume to"] }
+    mute:           { phrases: ["mute", "silence"] }
+    unmute:         { phrases: ["unmute"] }
+    play_pause:     { phrases: ["play", "pause", "resume"] }
+    next_track:     { phrases: ["next track", "skip", "next song"] }
+    prev_track:     { phrases: ["previous track", "go back a song"] }
+    lock:           { phrases: ["lock the computer", "lock it", "lock up"] }
+    sleep:          { phrases: ["go to sleep", "sleep the computer"] }
+    shutdown:       { phrases: ["shut down", "power off"] }
+    restart:        { phrases: ["restart", "reboot"] }
+
+  # --- Custom macros -------------------------------------------------------
+  # A macro is a named list of steps. Steps are `run:` (shell) or `do:`
+  # (any system action above) or `say:` (speak a line).
+  macros:
+    gaming_mode:
+      phrases: ["gaming mode", "game time", "let's play"]
+      say: "Reallocating. Good hunting."
+      steps:
+        - do: volume_set
+          value: 65
+        - run: "start steam://open/main"
+        - run: "start discord:"
+    work_mode:
+      phrases: ["work mode", "let's work", "focus mode"]
+      say: "Workspace assembled."
+      steps:
+        - run: "code"
+        - run: "start chrome"
+        - do: volume_set
+          value: 25
+    wind_down:
+      phrases: ["wind down", "shutting down for the night", "good night"]
+      say: "Powering down non-essential systems. Rest."
+      steps:
+        - do: volume_set
+          value: 15
+        - run: "taskkill /IM steam.exe /F"

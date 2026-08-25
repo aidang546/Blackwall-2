@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# Local secrets & machine-specific state
+config.local.yaml
+.erebus_token
+*.log
+
+# Downloaded model weights
+models/
+*.onnx
+*.bin
+*.gguf
+
+# Audio scratch
+*.wav
+!erebus/server/static/sfx/*.wav

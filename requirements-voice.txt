@@ -1,0 +1,17 @@
+# Voice pipeline. Install AFTER requirements.txt.
+#
+# NVIDIA users: install the CUDA build of torch FIRST, otherwise pip pulls the
+# CPU wheel and faster-whisper silently runs 10x slower:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+
+sounddevice==0.5.1          # mic capture (PortAudio)
+numpy==2.2.1
+faster-whisper==1.1.1       # CTranslate2 Whisper - the STT engine
+openwakeword==0.6.0         # always-on wake word detection
+piper-tts==1.2.0            # local neural TTS
+scipy==1.15.0               # audio effects (filters/reverb for the Blackwall voice)
+
+# Windows system control
+pycaw==20240210 ; sys_platform == "win32"
+comtypes==1.4.8 ; sys_platform == "win32"
+psutil==6.1.1

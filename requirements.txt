@@ -1,0 +1,10 @@
+# ---- Core (always required) -------------------------------------------------
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pyyaml==6.0.2
+websockets==14.1
+httpx==0.28.1
+
+# ---- Voice pipeline (optional: pip install -r requirements-voice.txt) -------
+# Installed separately so the UI/server can run on a machine without the
+# ~2GB of ML wheels. See requirements-voice.txt.

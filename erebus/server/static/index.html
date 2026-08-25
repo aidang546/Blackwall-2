@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>EREBUS</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 fill=%27%23050203%27/%3E%3Crect y=%2715%27 width=%2732%27 height=%272%27 fill=%27%23ff1e1e%27/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <canvas id="wall"></canvas>
+
+  <div class="vignette" aria-hidden="true"></div>
+
+  <header class="hud hud-top">
+    <div class="mark">
+      <span class="mark-name">EREBUS</span>
+      <span class="mark-sub" id="wake-hint">say &ldquo;erebus&rdquo;</span>
+    </div>
+    <div class="status">
+      <span class="status-dot" id="dot"></span>
+      <span class="status-text" id="status">connecting</span>
+    </div>
+  </header>
+
+  <main class="hud hud-center" aria-live="polite">
+    <p class="transcript" id="transcript"></p>
+    <p class="reply" id="reply"></p>
+  </main>
+
+  <footer class="hud hud-bottom">
+    <form class="console" id="console" autocomplete="off">
+      <span class="prompt">&gt;</span>
+      <input
+        id="input"
+        type="text"
+        placeholder="type a command"
+        spellcheck="false"
+        autocapitalize="off"
+        aria-label="Type a command">
+    </form>
+    <button class="talk" id="talk" type="button" aria-label="Push to talk">
+      <span class="talk-ring"></span>
+      <span class="talk-label">HOLD</span>
+    </button>
+  </footer>
+
+  <div class="capabilities" id="capabilities" aria-hidden="true"></div>
+
+<script src="/static/blackwall.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
