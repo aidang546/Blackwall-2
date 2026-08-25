@@ -40,7 +40,15 @@ class Assistant:
             silence_threshold=config.get("audio.silence_threshold", 0.012),
             max_utterance=config.get("audio.max_utterance", 15.0),
         )
-        self.mic = audio_mod.Microphone(self.audio_config)
+        # A WAV standing in for the microphone: same frames, same downstream
+        # code, no hardware. See FileMicrophone for why this exists.
+        fake = config.get("audio.fake_mic")
+        self.fake_mic = bool(fake)
+        self.mic = (
+            audio_mod.FileMicrophone(self.audio_config, fake)
+            if fake
+            else audio_mod.Microphone(self.audio_config)
+        )
 
         self.wake = WakeDetector(
             model=config.get("wake.model", "hey_jarvis"),
@@ -73,8 +81,10 @@ class Assistant:
 
         self._pending_confirm: tuple | None = None
         self._busy = asyncio.Lock()
-        self._task: asyncio.Task | None = None
+        self._tasks: list[asyncio.Task] = []
         self._voice_enabled = False
+        #: Set while a turn is capturing; the reader diverts frames here.
+        self._utterance: asyncio.Queue | None = None
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -85,7 +95,8 @@ class Assistant:
             "stt": self.stt.load(),
             "tts": self.speaker.load(),
             "brain": await self.brain.load(),
-            "audio": audio_mod.AUDIO_AVAILABLE,
+            # A fake microphone needs no sound card, only numpy.
+            "audio": audio_mod.AUDIO_AVAILABLE or self.fake_mic,
         }
         log.info("capabilities: %s", capabilities)
         await self.bus.publish("capabilities", **capabilities)
@@ -94,7 +105,11 @@ class Assistant:
             try:
                 self.mic.start()
                 self._voice_enabled = True
-                self._task = asyncio.create_task(self._listen_forever())
+                self._tasks.append(asyncio.create_task(self._listen_forever()))
+                if self.fake_mic:
+                    # Nobody is going to say the wake word into a file, so take
+                    # the turn directly once the frames start flowing.
+                    self._tasks.append(asyncio.create_task(self._replay_once()))
             except Exception as exc:  # noqa: BLE001
                 log.error("microphone unavailable: %s", exc)
         else:
@@ -105,29 +120,57 @@ class Assistant:
         await self.bus.set_state(State.IDLE)
 
     async def stop(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
+        for task in self._tasks:
+            task.cancel()
+        self._tasks.clear()
         self.mic.stop()
         await self.brain.close()
+
+    async def _replay_once(self) -> None:
+        """Run a single turn against the fake microphone, then report."""
+        await asyncio.sleep(0.2)     # let the pump prime the queue
+        await self.take_turn()
+        await self.bus.publish("replay_done")
 
     # -- the loop -----------------------------------------------------------
 
     async def _listen_forever(self) -> None:
-        """Always-on wake detection. Cheap enough to leave running for days."""
+        """The only reader of the capture queue.
+
+        While idle it feeds the wake detector. Once a turn starts it forwards
+        every frame to the recorder instead, so the audio is never split between
+        two consumers.
+        """
         log.info("listening for wake word")
         async for frame in self.mic.frames():
-            if self.bus.state is not State.IDLE:
-                continue   # already handling a turn; ignore until we're back
+            sink = self._utterance
+            if sink is not None:
+                sink.put_nowait(frame)
+                continue
+
             level = audio_mod.rms(frame)
             await self.bus.publish("level", value=level)
 
-            if not self.wake.ready:
+            if not self.wake.ready or self.bus.state is not State.IDLE:
                 continue
             score = self.wake.push(frame)
             if self.wake.fired(score):
                 log.info("wake word detected (%.2f)", score)
                 await self.bus.publish("wake", score=score)
                 asyncio.create_task(self.take_turn())
+
+    async def _utterance_frames(self):
+        """Frames routed here by the reader, for the duration of one turn."""
+        queue: asyncio.Queue = asyncio.Queue()
+        self._utterance = queue
+        try:
+            while True:
+                # A stalled capture device must not wedge the turn forever.
+                yield await asyncio.wait_for(queue.get(), timeout=5.0)
+        except (TimeoutError, asyncio.TimeoutError):
+            log.warning("capture stalled - no frames for 5s")
+        finally:
+            self._utterance = None
 
     async def take_turn(self) -> None:
         """One full interaction, from capture to spoken reply."""
@@ -142,8 +185,11 @@ class Assistant:
                 def on_level(value: float) -> None:
                     self.bus.publish_soon("level", value=value)
 
-                recording = await self.mic.record_utterance(
-                    on_level=on_level, preroll=preroll
+                recording = await audio_mod.record_utterance(
+                    self.audio_config,
+                    self._utterance_frames(),
+                    on_level=on_level,
+                    preroll=preroll,
                 )
                 if recording is None:
                     log.info("nothing said")

@@ -191,6 +191,10 @@ The phone client is the same page. `python -m erebus pair` prints a URL with
 the token in the fragment; open it on your phone on the same Wi-Fi and you get
 the same wall, the same console, and push-to-talk.
 
+It ships a web app manifest, so "Add to Home Screen" installs it as a
+fullscreen app with its own icon and no browser chrome. The pairing token is
+kept in `localStorage`, which survives relaunching from the home screen.
+
 On Android the browser handles speech recognition locally. On iOS there is no
 background microphone, so it is tap-to-talk — which is what the HOLD button is
 for. A native wrapper for always-on phone listening is the obvious next step
@@ -199,14 +203,51 @@ client as a remote.
 
 ---
 
+## Auditioning the voice
+
+You do not need a sound card to work on the voice — render it to a file:
+
+```
+python -m erebus fetch-voice en_GB-alan-medium
+python -m erebus say "The wall holds." --out wall.wav
+python -m erebus say "The wall holds." --out dry.wav --dry     # no effects
+python -m erebus voices                                        # what's installed
+```
+
+`--voice NAME` overrides the configured voice for one render, which makes
+comparing candidates a one-liner.
+
+## Running without a microphone
+
+`--fake-mic` feeds a WAV file through the real capture path — same frames, same
+silence detection, same recogniser, same matcher — takes one turn, and exits:
+
+```
+python -m erebus say "gaming mode" --dry --out cmd.wav
+python -m erebus --fake-mic cmd.wav
+```
+
+```
+  replaying...
+    heard    'coming mode.'
+    action   gaming_mode
+    said     'Reallocating. Good hunting.'
+```
+
+Besides making the loop testable on a machine with no audio hardware, this
+makes a misheard command reproducible: capture the audio once, then replay it
+while you fix the phrasing.
+
 ## Tests
 
 ```
-python tests/test_routing.py    # the matcher, against real phrasings
-python tests/test_e2e.py        # boots the daemon, drives it over the websocket
+python tests/test_routing.py         # the matcher, against real phrasings
+python tests/test_e2e.py             # boots the daemon, drives it over the websocket
+python tests/test_voice_roundtrip.py # speaks commands, transcribes them, routes them
 ```
 
-Neither needs a GPU, a model, or a microphone.
+The first two need no GPU, model, or microphone. The third needs the voice
+extras and one Piper voice, and skips cleanly without them.
 
 ---
 

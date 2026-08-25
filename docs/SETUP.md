@@ -79,34 +79,41 @@ audio:
 
 ## 5. A voice for it
 
-Piper voices are two files, downloaded from Hugging Face. `en_GB-alan-medium`
-is a low, flat British read that suits the persona:
+`en_GB-alan-medium` is a low, flat British read that suits the persona:
 
 ```powershell
-mkdir models
-curl.exe -L -o models/en_GB-alan-medium.onnx `
-  https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alan/medium/en_GB-alan-medium.onnx
-curl.exe -L -o models/en_GB-alan-medium.onnx.json `
-  https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json
+python -m erebus fetch-voice en_GB-alan-medium
 ```
 
-Point at it in `config.local.yaml`:
+That lands in `models/` and is picked up by name — no path needed. The download
+is ~63 MB and resumes if the connection drops. It is verified against the
+server's declared length, because a short file is not an error at download
+time; it surfaces much later as an opaque protobuf failure when the model
+loads.
 
-```yaml
-tts:
-  voice: models/en_GB-alan-medium.onnx
-```
-
-Test the voice and its effects chain without booting the whole thing:
+Audition it, with and without the effects chain:
 
 ```powershell
 python -m erebus say "The wall holds."
+python -m erebus say "The wall holds." --out wall.wav          # render to a file
+python -m erebus say "The wall holds." --out dry.wav --dry     # bypass effects
 ```
 
-Other voices worth trying: `en_GB-northern_english_male-medium` (rougher),
-`en_US-lessac-medium` (neutral), `en_GB-jenny_dioco-medium` (female). Browse at
-<https://rhasspy.github.io/piper-samples/>. Tune the processing under
-`tts.effects` — `pitch_shift` and `reverb` do most of the work.
+Other voices worth trying — `--voice` auditions one without changing config:
+
+| voice | character |
+|---|---|
+| `en_GB-alan-medium` | low, flat, British. The default. |
+| `en_GB-northern_english_male-medium` | rougher, more weathered |
+| `en_US-lessac-medium` | neutral American |
+| `en_GB-jenny_dioco-medium` | British female |
+
+Full catalogue: <https://rhasspy.github.io/piper-samples/>. `python -m erebus
+voices` lists what you have downloaded and marks the active one.
+
+Tune the processing under `tts.effects` — `pitch_shift` and `reverb` do most of
+the work. The whole chain costs about 40 ms per reply, so it is not worth
+disabling for speed.
 
 ---
 
@@ -188,8 +195,8 @@ New-NetFirewallRule -DisplayName "Erebus" -Direction Inbound -LocalPort 8848 `
                     -Protocol TCP -Action Allow -Profile Private
 ```
 
-Open the printed URL on your phone. On Android, add it to the home screen and
-it runs full-screen with no browser chrome.
+Open the printed URL on your phone, then use "Add to Home Screen" — it installs
+as a fullscreen app with its own icon, and stays paired across relaunches.
 
 The token in that URL is a password. Anyone holding it, on your network, can
 run anything in your registry.
@@ -220,3 +227,19 @@ and `static`.
 **Nothing launches.** Run `python -m erebus actions` to see what's registered,
 then test the raw command in PowerShell. A `start` command that fails there
 will fail here too.
+
+**It mishears one particular command.** Capture it and replay it while you
+adjust, instead of saying it over and over:
+
+```powershell
+python -m erebus say "the phrase" --dry --out cmd.wav
+python -m erebus --fake-mic cmd.wav
+```
+
+The matcher already absorbs close misses (Whisper hearing "coming mode" for
+"gaming mode" still routes correctly), so if something consistently fails, add
+the way it actually gets transcribed as another entry under `phrases:`.
+
+**A voice model fails to load with a protobuf error.** The download was
+truncated. Delete it from `models/` and re-run `fetch-voice`, which verifies
+the length and resumes.

@@ -27,12 +27,27 @@ CASES = [
     ("good night",                   "wind_down",      None),
     ("work mode",                    "work_mode",      None),
     ("open the editor",              "vscode",         None),
+    # Real Whisper near-misses. These are transcripts the recogniser actually
+    # produced for the phrase on the right, so the matcher has to absorb them.
+    ("coming mode",                  "gaming_mode",    None),
+    ("gaming mold",                  "gaming_mode",    None),
+    ("log the computer",             "lock",           None),
+    ("next drack",                   "next_track",     None),
+    ("work modes",                   "work_mode",      None),
+
     # These must NOT match a command - they are questions/conversation.
     ("what is the weather like",     None,             None),
     ("how does the display work",    None,             None),   # 'display' vs 'play'
     ("tell me about the blackwall",  None,             None),
     ("who are you",                  None,             None),
     ("set volume",                   None,             None),   # no number yet
+
+    # Fuzzy matching must not become a licence to guess. Each of these is
+    # within a few characters of a real phrase but means something else.
+    ("what mode is this",            None,             None),
+    ("i am going to lock up now",    None,             None),
+    ("gaming is fun",                None,             None),
+    ("do not shut down",             "shutdown",       None),   # gated on confirm
 ]
 
 failures = 0

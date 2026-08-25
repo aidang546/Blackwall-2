@@ -5,6 +5,9 @@
     python -m erebus devices         list microphones
     python -m erebus actions         list everything it can do
     python -m erebus say "text"      test the voice and its effects
+    python -m erebus say "x" --out a.wav --dry     render to a file, no effects
+    python -m erebus voices          list downloaded voices
+    python -m erebus fetch-voice NAME  download a Piper voice
     python -m erebus pair            print the URL and QR data for your phone
 """
 
@@ -90,19 +93,65 @@ def cmd_actions(config: Config) -> int:
     return 0
 
 
-def cmd_say(config: Config, text: str) -> int:
-    from .pipeline.tts import Speaker
+def cmd_say(config: Config, text: str, out: str | None, dry: bool, voice: str | None) -> int:
+    from .pipeline.tts import Speaker, write_wav
+
+    effects = dict(config.section("tts").get("effects", {}))
+    if dry:
+        effects["enabled"] = False
 
     speaker = Speaker(
         backend=config.get("tts.backend", "piper"),
-        voice=config.get("tts.voice"),
-        effects=config.section("tts").get("effects", {}),
+        voice=voice or config.get("tts.voice"),
+        effects=effects,
         rate=config.get("tts.rate", 1.0),
     )
     if not speaker.load():
         print("No speech backend available.")
         return 1
+
+    if out:
+        # Render to a file rather than a sound card, so the voice chain can be
+        # auditioned over SSH or in a container.
+        audio, sample_rate = asyncio.run(speaker.synthesize(text))
+        if audio is None or not len(audio):
+            print("Nothing was synthesised.")
+            return 1
+        write_wav(out, audio, sample_rate)
+        print(f"wrote {out}  ({len(audio) / sample_rate:.1f}s @ {sample_rate} Hz)")
+        return 0
+
     asyncio.run(speaker.speak(text))
+    return 0
+
+
+def cmd_fetch_voice(name: str) -> int:
+    from .pipeline.tts import fetch_voice
+
+    try:
+        path = fetch_voice(name)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Could not fetch {name}: {exc}")
+        print("\nBrowse the catalogue at https://rhasspy.github.io/piper-samples/")
+        return 1
+    print(f"\n  {path}\n\nSet it in config.local.yaml:\n\n  tts:\n    voice: {name}\n")
+    return 0
+
+
+def cmd_voices(config: Config) -> int:
+    from .pipeline.tts import MODELS_DIR, resolve_voice
+
+    installed = sorted(MODELS_DIR.glob("*.onnx")) if MODELS_DIR.exists() else []
+    if not installed:
+        print("No voices downloaded yet. Get one with:\n")
+        print("  python -m erebus fetch-voice en_GB-alan-medium\n")
+        return 0
+    active = resolve_voice(config.get("tts.voice", ""))
+    print()
+    for path in installed:
+        mark = "*" if active and path.samefile(active) else " "
+        print(f"  {mark} {path.stem:<38} {path.stat().st_size / 1e6:6.1f} MB")
+    print("\n  * = currently selected\n")
     return 0
 
 
@@ -161,6 +210,10 @@ async def run(config: Config, no_voice: bool, open_ui: bool) -> None:
         threading.Thread(target=lambda: (time.sleep(0.4), open_window(local_url)),
                          daemon=True).start()
 
+    # With a fake microphone this is a one-shot run: watch the bus, print what
+    # happened, and stop. Subscribe before starting so nothing is missed.
+    replay = bus.subscribe() if config.get("audio.fake_mic") else None
+
     if not no_voice:
         await assistant.start()
     else:
@@ -169,9 +222,36 @@ async def run(config: Config, no_voice: bool, open_ui: bool) -> None:
         )
 
     try:
+        if replay is not None:
+            await _watch_replay(bus, replay)
+            server.should_exit = True
         await server_task
     finally:
         await assistant.stop()
+
+
+async def _watch_replay(bus: EventBus, queue) -> None:
+    """Print the transcript, action and reply from a --fake-mic turn."""
+    print("  replaying...\n")
+    try:
+        async with asyncio.timeout(180):
+            while True:
+                event = await queue.get()
+                if event.kind == "transcript":
+                    print(f"    heard    {event.data.get('text')!r}")
+                elif event.kind == "action":
+                    value = event.data.get("value")
+                    print(f"    action   {event.data.get('name')}"
+                          f"{f' = {value}' if value else ''}")
+                elif event.kind == "reply":
+                    print(f"    said     {event.data.get('text')!r}")
+                elif event.kind == "replay_done":
+                    break
+    except (TimeoutError, asyncio.TimeoutError):
+        print("    timed out")
+    finally:
+        bus.unsubscribe(queue)
+    print()
 
 
 def open_window(url: str) -> None:
@@ -201,8 +281,19 @@ def open_window(url: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="erebus", description="Erebus voice assistant")
     parser.add_argument("command", nargs="?", default="run",
-                        choices=["run", "devices", "actions", "say", "pair"])
-    parser.add_argument("text", nargs="*", help="text for `say`")
+                        choices=["run", "devices", "actions", "say", "pair",
+                                 "voices", "fetch-voice"])
+    parser.add_argument("text", nargs="*",
+                        help="text for `say`, or a voice name for `fetch-voice`")
+    parser.add_argument("--out", metavar="FILE",
+                        help="say: render to a WAV instead of playing it")
+    parser.add_argument("--dry", action="store_true",
+                        help="say: bypass the voice effects chain")
+    parser.add_argument("--voice", metavar="NAME",
+                        help="say: override the configured voice")
+    parser.add_argument("--fake-mic", metavar="WAV",
+                        help="run: feed a WAV file in place of the microphone, "
+                             "take one turn from it, and exit")
     parser.add_argument("--no-voice", action="store_true",
                         help="server and UI only; skip loading any models")
     parser.add_argument("--no-window", action="store_true",
@@ -219,11 +310,21 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_actions(config)
     if args.command == "pair":
         return cmd_pair(config)
+    if args.command == "voices":
+        return cmd_voices(config)
+    if args.command == "fetch-voice":
+        if not args.text:
+            print("usage: python -m erebus fetch-voice en_GB-alan-medium")
+            return 2
+        return cmd_fetch_voice(args.text[0])
     if args.command == "say":
         if not args.text:
             print('usage: python -m erebus say "something to say"')
             return 2
-        return cmd_say(config, " ".join(args.text))
+        return cmd_say(config, " ".join(args.text), args.out, args.dry, args.voice)
+
+    if args.fake_mic:
+        Config._assign(config.data, "audio.fake_mic", args.fake_mic)
 
     open_ui = config.get("ui.autolaunch", True) and not args.no_window
     try:

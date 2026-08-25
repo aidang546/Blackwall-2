@@ -26,16 +26,37 @@
     caps:       document.getElementById('capabilities')
   };
 
-  // A token in the URL fragment is how a phone pairs: the desktop prints a
-  // URL with #token=... and the fragment never reaches the server as a
-  // referrer. We move it into sessionStorage and strip it from the address bar.
+  // A token in the URL fragment is how a phone pairs: the desktop prints a URL
+  // with #token=... and a fragment is never sent to the server or leaked in a
+  // referrer. We store it and strip it from the address bar.
+  //
+  // localStorage, not sessionStorage: installed to a home screen the app starts
+  // at the manifest's start_url with no fragment, and a session store would
+  // unpair the phone on every launch. Private browsing can throw on both, hence
+  // the guards - an unpaired client fails with a clear message rather than a
+  // stack trace.
+  function readToken() {
+    for (const store of [localStorage, sessionStorage]) {
+      try {
+        const value = store.getItem('erebus_token');
+        if (value) return value;
+      } catch (e) { /* storage disabled */ }
+    }
+    return '';
+  }
+
+  function saveToken(value) {
+    for (const store of [localStorage, sessionStorage]) {
+      try { store.setItem('erebus_token', value); return; } catch (e) { /* next */ }
+    }
+  }
+
   const params = new URLSearchParams(location.hash.slice(1));
   if (params.get('token')) {
-    try { sessionStorage.setItem('erebus_token', params.get('token')); } catch (e) {}
+    saveToken(params.get('token'));
     history.replaceState(null, '', location.pathname);
   }
-  let token = '';
-  try { token = sessionStorage.getItem('erebus_token') || ''; } catch (e) {}
+  let token = readToken();
 
   const wall = new Blackwall(el.wall);
 

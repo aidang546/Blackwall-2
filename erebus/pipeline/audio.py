@@ -11,18 +11,26 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
+import threading
 import time
 from dataclasses import dataclass
 
 log = logging.getLogger("erebus.audio")
 
-try:  # pragma: no cover - hardware dependent
+# numpy and the sound card are separate concerns: a FileMicrophone needs only
+# the former. Bundling the imports would make a machine with no audio device
+# look like a machine with no numpy.
+try:  # pragma: no cover
     import numpy as np
-    import sounddevice as sd
-
-    AUDIO_AVAILABLE = True
 except ImportError:  # pragma: no cover
     np = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - hardware dependent
+    import sounddevice as sd
+
+    AUDIO_AVAILABLE = np is not None
+except (ImportError, OSError):  # pragma: no cover
+    # OSError: the wheel is present but libportaudio or a device is not.
     sd = None  # type: ignore[assignment]
     AUDIO_AVAILABLE = False
 
@@ -132,41 +140,149 @@ class Microphone:
                 continue
             yield frame
 
-    async def record_utterance(self, on_level=None, preroll=None):
-        """Capture speech until the speaker stops, then return the whole thing.
+async def record_utterance(config: AudioConfig, frames, on_level=None, preroll=None):
+    """Consume frames until the speaker stops, then return the whole utterance.
 
-        `preroll` is audio captured *before* this was called - the wake detector
-        hands over the tail of its buffer so a command spoken immediately after
-        the wake word ("Erebus, gaming mode") is not truncated.
+    Takes a frame source rather than reading the microphone itself, because
+    there must only ever be one reader of the capture queue. The wake loop owns
+    that read and forwards frames here for the duration of a turn; two
+    coroutines pulling from the same queue would silently split the audio
+    between them and hand Whisper every other frame.
 
-        Returns a float32 array, or None if nothing above the noise floor
-        arrived before the timeout.
-        """
-        chunks: list = list(preroll or [])
-        started = time.monotonic()
-        last_voice = started
-        heard_voice = False
+    `preroll` is audio captured *before* this was called - the wake detector
+    passes the tail of its buffer so a command run together with the wake word
+    ("Erebus, gaming mode") is not clipped.
 
-        async for frame in self.frames():
-            chunks.append(frame)
-            level = rms(frame)
-            if on_level is not None:
-                on_level(level)
+    Returns a float32 array, or None if nothing above the noise floor arrived.
+    """
+    chunks: list = list(preroll or [])
+    started = time.monotonic()
+    last_voice = started
+    heard_voice = False
 
-            now = time.monotonic()
-            if level > self.config.silence_threshold:
-                heard_voice = True
-                last_voice = now
+    async for frame in frames:
+        chunks.append(frame)
+        level = rms(frame)
+        if on_level is not None:
+            on_level(level)
 
-            if heard_voice and (now - last_voice) > self.config.silence_timeout:
-                break
-            # Nothing at all was said - give up rather than hang open.
-            if not heard_voice and (now - started) > self.config.silence_timeout * 3:
-                return None
-            if (now - started) > self.config.max_utterance:
-                log.warning("utterance hit max length, cutting off")
-                break
+        now = time.monotonic()
+        if level > config.silence_threshold:
+            heard_voice = True
+            last_voice = now
 
-        if not chunks or not heard_voice:
+        if heard_voice and (now - last_voice) > config.silence_timeout:
+            break
+        # Nothing at all was said - give up rather than hang open.
+        if not heard_voice and (now - started) > config.silence_timeout * 3:
             return None
-        return np.concatenate(chunks)
+        if (now - started) > config.max_utterance:
+            log.warning("utterance hit max length, cutting off")
+            break
+
+    if not chunks or not heard_voice:
+        return None
+    return np.concatenate(chunks)
+
+
+class FileMicrophone(Microphone):
+    """A microphone that plays back a WAV file instead of listening.
+
+    Everything downstream - silence detection, the recorder, Whisper, the
+    matcher, the visualiser - behaves exactly as it does with real hardware,
+    because it is the same code receiving the same frames. That makes the whole
+    loop testable on a machine with no sound card, and makes a misheard command
+    reproducible: capture the audio once, then replay it while you fix things.
+
+    Frames are fed at wall-clock speed on purpose. Pushing the file through as
+    fast as it will go would defeat the silence timeout and mask timing bugs.
+    """
+
+    def __init__(self, config: AudioConfig, path) -> None:
+        super().__init__(config)
+        self.path = str(path)
+        self._thread = None
+
+    def _load(self):
+        import wave
+
+        with wave.open(self.path, "rb") as wav:
+            rate = wav.getframerate()
+            channels = wav.getnchannels()
+            width = wav.getsampwidth()
+            raw = wav.readframes(wav.getnframes())
+
+        if width != 2:
+            raise ValueError(f"{self.path}: need 16-bit PCM, got {width * 8}-bit")
+
+        audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        if channels > 1:
+            audio = audio.reshape(-1, channels).mean(axis=1)
+
+        if rate != self.config.sample_rate:
+            target_n = int(len(audio) / rate * self.config.sample_rate)
+            idx = np.linspace(0, len(audio) - 1, target_n)
+            lo = np.floor(idx).astype(np.int32)
+            hi = np.clip(lo + 1, 0, len(audio) - 1)
+            frac = (idx - lo).astype(np.float32)
+            audio = audio[lo] * (1 - frac) + audio[hi] * frac
+            log.info("resampled %s from %d to %d Hz", self.path, rate,
+                     self.config.sample_rate)
+        return audio.astype(np.float32)
+
+    def _pump(self, audio) -> None:
+        import time as _time
+
+        frame_size = self.config.frame_size
+        interval = frame_size / self.config.sample_rate
+        # Trailing silence so the recorder's end-of-speech timeout fires just as
+        # it would if you had stopped talking.
+        tail = np.zeros(
+            int(self.config.sample_rate * (self.config.silence_timeout + 0.6)),
+            dtype=np.float32,
+        )
+        stream = np.concatenate([audio, tail])
+
+        next_at = _time.monotonic()
+        for start in range(0, len(stream), frame_size):
+            if not self._running:
+                return
+            frame = stream[start : start + frame_size]
+            if len(frame) < frame_size:
+                frame = np.pad(frame, (0, frame_size - len(frame)))
+            try:
+                self._queue.put(frame, timeout=1.0)
+            except queue.Full:
+                pass
+            next_at += interval
+            delay = next_at - _time.monotonic()
+            if delay > 0:
+                _time.sleep(delay)
+
+        # Keep feeding silence rather than stopping, so a caller that is still
+        # waiting on frames does not hang on an empty queue.
+        silence = np.zeros(frame_size, dtype=np.float32)
+        while self._running:
+            try:
+                self._queue.put(silence, timeout=0.5)
+            except queue.Full:
+                pass
+            _time.sleep(interval)
+
+    def start(self) -> None:
+        if self._running:
+            return
+        if np is None:
+            raise RuntimeError("FileMicrophone needs numpy")
+        audio = self._load()
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._pump, args=(audio,), daemon=True
+        )
+        self._thread.start()
+        log.info("fake microphone: %s (%.1fs)", self.path,
+                 len(audio) / self.config.sample_rate)
+
+    def stop(self) -> None:
+        self._running = False
+        self._thread = None

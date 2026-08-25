@@ -16,6 +16,7 @@ there is deliberately no voice command to turn it on.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import logging
 import re
 import subprocess
@@ -36,6 +37,15 @@ LAUNCH_PREFIXES = (
 )
 
 _WORD_SPLIT = re.compile(r"[^a-z0-9]+")
+
+#: A substring match must cover at least this fraction of the utterance,
+#: otherwise it is a passing mention rather than a command.
+MIN_COVERAGE = 0.45
+
+#: Fuzzy-matching limits. See Registry._fuzzy_match for why each one is here.
+FUZZY_THRESHOLD = 0.80      # similarity floor ("coming mode" -> "gaming mode")
+FUZZY_MIN_LENGTH = 7        # shortest phrase eligible, in characters
+FUZZY_LENGTH_RATIO = 0.75   # the two strings must be comparable in length
 
 
 def normalize(text: str) -> str:
@@ -134,12 +144,21 @@ class Registry:
                 if text == phrase:
                     score, exact = len(phrase) + 100, True
                 elif self._contains_phrase(text, phrase):
+                    # A command has to be most of what you said, not an aside.
+                    # "lock up" is a real phrase, but in "i am going to lock up
+                    # now" it is a mention, not an instruction - and locking the
+                    # machine because someone said it in passing is exactly the
+                    # kind of surprise this assistant must not produce.
+                    if len(phrase) / len(text) < MIN_COVERAGE:
+                        continue
                     score, exact = len(phrase), False
                 else:
                     continue
                 if best is None or score > best.score:
                     best = Match(action, None, score, exact)
 
+        if best is None:
+            best = self._fuzzy_match(text)
         if best is None:
             return None
 
@@ -149,6 +168,47 @@ class Registry:
             if not number:
                 return None   # "volume to" with no number is not a command yet
             best.value = number.group(1)
+        return best
+
+    def _fuzzy_match(self, text: str) -> Match | None:
+        """Catch near-misses from speech recognition.
+
+        Whisper reliably produces plausible-but-wrong neighbours - "coming mode"
+        for "gaming mode", "lock the computer" as "log the computer". Those are
+        one or two characters off a phrase we know, and failing them sends a
+        perfectly clear command to the LLM or to nothing at all.
+
+        Kept deliberately tight:
+
+        * only whole-utterance comparisons, never substrings, so a long sentence
+          cannot drift into a short command;
+        * only phrases of a real length, since short ones ("play", "mute") have
+          too many close neighbours in ordinary speech;
+        * a high similarity floor, and the length of the two strings must be
+          comparable - "lock" and "lock the computer and open chrome" are not
+          near-misses of each other however well the prefix lines up.
+
+        Anything softer than this belongs to the LLM router, which sees the
+        utterance next and has the context to judge it.
+        """
+        best: Match | None = None
+        for action in self.actions.values():
+            for phrase in action.phrases:
+                if len(phrase) < FUZZY_MIN_LENGTH:
+                    continue
+                shorter, longer = sorted((len(text), len(phrase)))
+                if shorter / longer < FUZZY_LENGTH_RATIO:
+                    continue
+                ratio = difflib.SequenceMatcher(None, text, phrase).ratio()
+                if ratio < FUZZY_THRESHOLD:
+                    continue
+                # Scale into the same range as a substring hit so the
+                # assistant's confidence gate treats it consistently.
+                score = len(phrase) * ratio
+                if best is None or score > best.score:
+                    best = Match(action, None, score, False)
+        if best is not None:
+            log.info("fuzzy match: %r -> %s", text, best.action.name)
         return best
 
     @staticmethod
