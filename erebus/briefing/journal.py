@@ -129,6 +129,12 @@ class Journal:
             out[entry.day] = out.get(entry.day, 0) + 1
         return out
 
+    #: Fields recorded for our own diagnostics, never for the model. A briefing
+    #: entry notes how long it was and whether health data was present; fed
+    #: back in, that surfaced as "this is the fifth briefing where words are
+    #: below 140" - the assistant reporting on itself instead of on him.
+    INTERNAL_FIELDS = {"words", "had_health", "saw", "error"}
+
     def as_prompt(self, days: int = 10) -> str:
         """Recent history, for the model to hold you to."""
         entries = self.recent(days)
@@ -138,7 +144,8 @@ class Journal:
         for entry in entries[-40:]:
             when = entry.ts.strftime("%a %d %b")
             detail = ", ".join(
-                f"{k}={v}" for k, v in entry.data.items() if v not in (None, "", [])
+                f"{k}={v}" for k, v in entry.data.items()
+                if v not in (None, "", []) and k not in self.INTERNAL_FIELDS
             )
             lines.append(f"  {when}  {entry.kind}: {detail}" if detail
                          else f"  {when}  {entry.kind}")

@@ -76,7 +76,14 @@ class Brain:
     async def load(self) -> bool:
         if self.backend != "ollama":
             return False
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=3.0))
+        # Generous read timeout, short connect. Prompt processing before the
+        # first token can take a long time on a cold model or a long system
+        # prompt, and cutting that off looks to the operator like the assistant
+        # simply refusing to answer. A dead server is what `connect` catches,
+        # and that is the case worth failing fast on.
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0, connect=3.0)
+        )
         try:
             response = await self._client.get(f"{self.host}/api/tags")
             response.raise_for_status()
@@ -207,7 +214,11 @@ class Brain:
                 collected.append(fragment)
                 yield fragment
         except Exception as exc:  # noqa: BLE001
-            log.error("streaming conversation failed: %s", exc)
+            # Several httpx exceptions stringify to nothing, so name the type
+            # too - "streaming failed: " with an empty reason is a bug report
+            # nobody can act on.
+            log.error("streaming conversation failed: %s: %s",
+                      type(exc).__name__, exc or "(no detail)")
             if not collected:
                 yield "The connection faltered. Say it again."
             return
@@ -247,7 +258,8 @@ class Brain:
                 max_tokens=self.max_tokens if max_tokens is None else max_tokens,
             )
         except Exception as exc:  # noqa: BLE001
-            log.error("completion failed: %s", exc)
+            log.error("completion failed: %s: %s",
+                      type(exc).__name__, exc or "(no detail)")
             return ""
 
     async def complete_stream(
@@ -271,7 +283,8 @@ class Brain:
             ):
                 yield fragment
         except Exception as exc:  # noqa: BLE001
-            log.error("streaming completion failed: %s", exc)
+            log.error("streaming completion failed: %s: %s",
+                      type(exc).__name__, exc or "(no detail)")
 
     # -- conversation -------------------------------------------------------
 

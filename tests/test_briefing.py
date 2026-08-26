@@ -118,6 +118,14 @@ def test_journal(tmp: pathlib.Path) -> None:
 
     check("history renders for the prompt", "published" in journal.as_prompt())
 
+    # Internal telemetry must not reach the model. Fed back in, a briefing's
+    # own word count came out as the assistant commenting on its own briefings.
+    journal.append("briefing", words=140, had_health=True, saw=False)
+    rendered = journal.as_prompt()
+    check("internal telemetry is kept out of the prompt",
+          "words=" not in rendered and "had_health" not in rendered, rendered[-60:])
+    check("but the entry itself still appears", "briefing" in rendered)
+
 
 def test_health_csv(tmp: pathlib.Path) -> None:
     print("\nHEALTH (csv)")
@@ -389,14 +397,38 @@ metrics:
     seen = build_prompt(profile, journal, [], observation="He is not at the desk.")
     check("the vision seam injects cleanly", "not at the desk" in seen)
 
-    # The three guarantees the persona is responsible for.
-    check("persona forbids inventing numbers", "NEVER invent a number" in PERSONA)
+    # The guarantees the persona is responsible for. Checked as concepts rather
+    # than exact sentences: the register gets rewritten as the voice is tuned,
+    # and a test that breaks on rephrasing gets relaxed rather than heeded.
+    # Whitespace-collapsed: the persona is wrapped prose, so any phrase long
+    # enough to be worth asserting on will sometimes straddle a line break.
+    import re as _re
+
+    lower = _re.sub(r"\s+", " ", PERSONA.lower())
+
+    check("persona forbids inventing numbers",
+          "never invent a number" in lower)
     check("persona keeps the attack on output, not the person",
-          "NEVER his body" in PERSONA)
+          all(word in lower for word in ("his body", "appearance", "worth"))
+          and "never his body" in lower)
     check("persona forbids training through pain",
-          "train through pain" in PERSONA)
+          "pain" in lower and "never counsel" in lower
+          and "skipping sleep" in lower)
+    check("persona forbids eating less", "eating\n  less" in lower or "eating less" in lower)
     check("persona forbids markdown, since it is spoken",
-          "NO headings" in PERSONA)
+          "no headings" in lower and "no markdown" in lower)
+    check("persona separates promises from achievements",
+          "promise, not an achievement" in lower)
+
+    # The register itself, now that it is doing real work.
+    check("persona forbids giving orders",
+          "never give him an order" in lower)
+    check("persona teaches technique rather than supplying copyable prose",
+          "no sample briefing is given" in lower
+          and "schematic on purpose" in lower
+          and "prediction, always" in lower)
+    check("persona forbids echoing the input back",
+          "do not restate the input" in lower)
 
 
 def main() -> int:
