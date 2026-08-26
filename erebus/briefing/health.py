@@ -21,6 +21,7 @@ it does not know it.
 from __future__ import annotations
 
 import csv as csv_mod
+import json
 import logging
 from dataclasses import dataclass, field, fields
 from datetime import date, datetime, timedelta
@@ -294,6 +295,194 @@ def _apple_duration_hours(start: str, end: str) -> float | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+#  Pushed data
+#
+#  Some devices have no cloud API to pull from - Nothing's CMF watches among
+#  them - so the phone pushes instead. Erebus already runs a token-authed
+#  server the phone can reach, which makes push the natural direction here
+#  rather than a workaround.
+#
+#  The sender may be a Tasker task, a purpose-built exporter, or a curl
+#  one-liner. None of them agree on field names, and at least one is
+#  undocumented, so the parser is deliberately tolerant: it accepts a bare
+#  record, a list, or an envelope, and maps a wide set of aliases onto the
+#  canonical fields. Being strict here would mean rejecting real data over a
+#  spelling.
+# ---------------------------------------------------------------------------
+
+STORE_PATH = Path(__file__).resolve().parents[2] / "health.local.jsonl"
+
+#: Alias -> canonical field. Compared after lowercasing and stripping
+#: separators, so "restingHeartRate", "resting_heart_rate" and "Resting Heart
+#: Rate (bpm)" all collapse to the same key.
+ALIASES = {
+    "date": "date", "day": "date", "starttime": "date", "startdate": "date",
+    "timestamp": "date", "cyclestarttime": "date", "recordeddate": "date",
+
+    "sleephours": "sleep_hours", "sleep": "sleep_hours",
+    "sleepduration": "sleep_hours", "totalsleep": "sleep_hours",
+    "asleepduration": "sleep_hours", "sleeptime": "sleep_hours",
+
+    "sleepscore": "sleep_score", "sleepquality": "sleep_score",
+
+    "restingheartrate": "resting_hr", "restinghr": "resting_hr",
+    "rhr": "resting_hr", "restingheartratebpm": "resting_hr",
+
+    "hrv": "hrv", "heartratevariability": "hrv", "hrvmillis": "hrv",
+    "heartratevariabilitysdnn": "hrv", "sdnn": "hrv",
+
+    "steps": "steps", "stepcount": "steps", "totalsteps": "steps",
+
+    "calories": "calories", "activecalories": "calories",
+    "activeenergyburned": "calories", "caloriesburned": "calories",
+
+    "weight": "weight_kg", "weightkg": "weight_kg", "bodymass": "weight_kg",
+
+    "readiness": "readiness", "recovery": "readiness",
+    "readinessscore": "readiness", "recoveryscore": "readiness",
+
+    "strain": "strain", "daystrain": "strain", "load": "strain",
+    "trainingload": "strain", "exertion": "strain",
+
+    "workouts": "workouts", "workout": "workouts", "activity": "workouts",
+    "activities": "workouts", "exercisetype": "workouts",
+}
+
+#: Values arriving in units we can convert without being told.
+_SLEEP_MINUTES_ABOVE = 20.0     # nobody sleeps 20 hours; that many is minutes
+
+
+def _canonical(key: str) -> str | None:
+    flat = "".join(ch for ch in str(key).lower() if ch.isalnum())
+    return ALIASES.get(flat)
+
+
+def normalise_pushed(payload: Any) -> list[dict]:
+    """Turn whatever arrived into a list of canonical day records.
+
+    Accepts a single record, a bare list, or an envelope under any of the
+    common wrapper keys. Unknown fields are dropped rather than rejected - a
+    sender that includes its own metadata should not fail the whole upload.
+    """
+    if isinstance(payload, dict):
+        for wrapper in ("days", "data", "records", "entries", "results", "items"):
+            if isinstance(payload.get(wrapper), list):
+                payload = payload[wrapper]
+                break
+        else:
+            payload = [payload]
+    if not isinstance(payload, list):
+        return []
+
+    out: list[dict] = []
+    for raw in payload:
+        if not isinstance(raw, dict):
+            continue
+        record: dict = {}
+        for key, value in raw.items():
+            field_name = _canonical(key)
+            if field_name is None or value is None:
+                continue
+            if field_name == "date":
+                record["date"] = str(value)[:10]
+            elif field_name == "workouts":
+                if isinstance(value, list):
+                    record.setdefault("workouts", []).extend(str(v) for v in value)
+                elif str(value).strip():
+                    record.setdefault("workouts", []).append(str(value).strip())
+            else:
+                number = _to_float(value)
+                if number is not None:
+                    record[field_name] = number
+
+        if "date" not in record:
+            continue    # undateable data cannot be reasoned about
+
+        # Sleep is the one field senders routinely report in minutes. A value
+        # that could only be minutes is converted; anything ambiguous is left
+        # alone rather than silently mangled.
+        sleep = record.get("sleep_hours")
+        if sleep is not None and sleep > _SLEEP_MINUTES_ABOVE:
+            record["sleep_hours"] = sleep / 60.0
+
+        out.append(record)
+    return out
+
+
+def store_pushed(records: list[dict], path: Path | None = None) -> int:
+    """Append records to the local store. Returns how many were written."""
+    path = path or STORE_PATH
+    if not records:
+        return 0
+    with open(path, "a", encoding="utf-8") as fh:
+        for record in records:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    log.info("stored %d pushed health record(s)", len(records))
+    return len(records)
+
+
+class PushedHealthSource(HealthSource):
+    """Days pushed from the phone, newest wins.
+
+    The store is append-only, so re-sending a day is expected rather than an
+    error - a later record for the same date replaces the earlier one field by
+    field, which is what you want when a morning push is followed by an evening
+    one carrying the day's workout.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = Path(path) if path else STORE_PATH
+
+    @property
+    def describe(self) -> str:
+        return f"push:{self.path.name}"
+
+    def snapshots(self, days: int = 14) -> list[HealthSnapshot]:
+        if not self.path.exists():
+            return []
+        cutoff = date.today() - timedelta(days=days)
+        merged: dict[date, dict] = {}
+
+        with open(self.path, "r", encoding="utf-8") as fh:
+            for number, line in enumerate(fh, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    day = datetime.strptime(record["date"][:10], "%Y-%m-%d").date()
+                except (json.JSONDecodeError, KeyError, ValueError):
+                    log.warning("health store line %d unreadable, skipping", number)
+                    continue
+                if day < cutoff:
+                    continue
+                existing = merged.setdefault(day, {})
+                for key, value in record.items():
+                    if key == "date":
+                        continue
+                    if key == "workouts":
+                        existing.setdefault("workouts", [])
+                        for w in value:
+                            if w not in existing["workouts"]:
+                                existing["workouts"].append(w)
+                    else:
+                        existing[key] = value
+
+        snapshots = []
+        for day in sorted(merged):
+            snap = HealthSnapshot(day=day)
+            for key, value in merged[day].items():
+                if hasattr(snap, key):
+                    setattr(snap, key, value)
+            snapshots.append(snap)
+        return snapshots
+
+    def latest_day(self) -> date | None:
+        snaps = self.snapshots(3650)
+        return snaps[-1].day if snaps else None
+
+
 def build(config: dict) -> HealthSource:
     """Construct the configured source. Never raises - falls back to none."""
     source = (config or {}).get("source", "none")
@@ -307,6 +496,8 @@ def build(config: dict) -> HealthSource:
             )
         if source in ("apple", "apple_health"):
             return AppleHealthSource(path=config["path"])
+        if source == "push":
+            return PushedHealthSource(config.get("path"))
     except KeyError as exc:
         log.error("health source %r is missing %s - disabling it", source, exc)
     except Exception as exc:  # noqa: BLE001

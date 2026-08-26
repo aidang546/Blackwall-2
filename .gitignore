@@ -24,3 +24,17 @@ models/
 # Personal briefing data - your business, your numbers, your training
 profile.local.yaml
 journal.local.jsonl
+health.local.jsonl
+
+# Health exports, in case one gets dropped in the repo folder. These are the
+# most sensitive files the project touches and none of them belong in git.
+export.xml
+export_cda.xml
+apple_health_export/
+*health*.csv
+*sleep*.csv
+*cycles*.csv
+*activities*.csv
+*_export.csv
+*.fit
+*.tcx

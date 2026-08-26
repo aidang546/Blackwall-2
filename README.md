@@ -234,7 +234,8 @@ Recovery trends are computed in Python before the model sees them, so it cannot
 get your numbers backwards — and when the data shows you are under-recovered it
 lowers the training demand rather than raising it.
 
-Full guide, including wearable setup: **[docs/BRIEFING.md](docs/BRIEFING.md)**.
+Full guide: **[docs/BRIEFING.md](docs/BRIEFING.md)**. Getting your wearable data
+in, and where it goes: **[docs/HEALTH.md](docs/HEALTH.md)**.
 
 ## Auditioning the voice
 

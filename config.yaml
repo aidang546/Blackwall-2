@@ -105,6 +105,10 @@ briefing:
   #   source: csv     any device that exports CSV (Whoop, Garmin, Oura, Fitbit).
   #                   Name the columns yourself; `scale` converts units.
   #   source: apple   Apple Health's export.xml, streamed.
+  #   source: push    the phone POSTs to /api/health. For devices with no
+  #                   cloud API to pull from - Nothing/CMF watches, and
+  #                   anything else that only reaches Android Health Connect.
+  #                   See docs/HEALTH.md.
   health:
     source: none
     # path: "C:/Users/you/Downloads/physiological_cycles.csv"

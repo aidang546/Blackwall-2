@@ -210,6 +210,73 @@ def test_health_apple(tmp: pathlib.Path) -> None:
     check("workouts make it a training day", snaps[-1].trained)
 
 
+def test_health_push(tmp: pathlib.Path) -> None:
+    print("\nHEALTH (push)")
+    today = date.today()
+
+    # The canonical shape.
+    records = health_mod.normalise_pushed(
+        {"days": [{"date": today.isoformat(), "sleep_hours": 6.4,
+                   "resting_hr": 57, "hrv": 52, "workouts": ["strength"]}]}
+    )
+    check("accepts the documented envelope", len(records) == 1)
+    check("keeps workouts as a list", records[0]["workouts"] == ["strength"])
+
+    # What a real sender is more likely to produce.
+    camel = health_mod.normalise_pushed(
+        [{"startTime": f"{today}T00:00:00Z", "sleepDuration": 388,
+          "restingHeartRate": 59, "heartRateVariability": 47,
+          "stepCount": 9100, "deviceModel": "CMF Watch Pro 2"}]
+    )
+    check("accepts a bare list", len(camel) == 1)
+    check("maps camelCase aliases", camel[0]["resting_hr"] == 59)
+    check("converts sleep reported in minutes",
+          abs(camel[0]["sleep_hours"] - 6.47) < 0.05,
+          f"{camel[0]['sleep_hours']:.2f}h from 388min")
+    check("drops fields it does not understand", "deviceModel" not in camel[0])
+
+    single = health_mod.normalise_pushed({"day": str(today), "rhr": 61})
+    check("accepts a single bare record", len(single) == 1)
+    check("maps short aliases", single[0]["resting_hr"] == 61)
+
+    # Sleep already in hours must not be mangled.
+    hours = health_mod.normalise_pushed({"date": str(today), "sleep_hours": 7.5})
+    check("leaves plausible hour values alone", hours[0]["sleep_hours"] == 7.5)
+
+    check("a record with no date is refused",
+          health_mod.normalise_pushed({"resting_hr": 60}) == [])
+    check("non-JSON-object input yields nothing",
+          health_mod.normalise_pushed("nonsense") == [])
+    check("an empty list yields nothing", health_mod.normalise_pushed([]) == [])
+
+    # Round trip through the store.
+    store = tmp / "health.jsonl"
+    health_mod.store_pushed(records, store)
+    health_mod.store_pushed(camel, store)
+    source = health_mod.PushedHealthSource(store)
+    snaps = source.snapshots(14)
+    check("stored records come back", len(snaps) == 1, f"{len(snaps)} day(s)")
+
+    # Two pushes for the same day: later wins field by field, workouts union.
+    merged = snaps[0]
+    check("a later push overwrites an earlier field",
+          merged.resting_hr == 59, f"rhr={merged.resting_hr}")
+    check("fields only the first push had survive",
+          merged.hrv == 47 and merged.workouts == ["strength"])
+    check("a re-push is not a duplicate day", len(snaps) == 1)
+
+    with open(store, "a", encoding="utf-8") as fh:
+        fh.write("not json\n")
+    check("a corrupt line does not lose the store",
+          len(health_mod.PushedHealthSource(store).snapshots(14)) == 1)
+
+    check("push source is selectable from config",
+          isinstance(health_mod.build({"source": "push", "path": str(store)}),
+                     health_mod.PushedHealthSource))
+    check("an empty store is not an error",
+          health_mod.PushedHealthSource(tmp / "nothing.jsonl").snapshots() == [])
+
+
 def test_prompt(tmp: pathlib.Path) -> None:
     print("\nPROMPT & PERSONA")
     profile = Profile.load(write_yaml(tmp, """
@@ -251,6 +318,7 @@ def main() -> int:
         test_journal(tmp)
         test_health_csv(tmp)
         test_health_apple(tmp)
+        test_health_push(tmp)
         test_prompt(tmp)
     print(f"\n  {'all checks passed' if not FAILURES else f'{FAILURES} failed'}")
     return 1 if FAILURES else 0

@@ -21,6 +21,7 @@ from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from ..briefing import health as health_mod
 from ..core.bus import EventBus
 from ..core.state import State
 
@@ -98,6 +99,44 @@ def create_app(config, bus: EventBus, assistant) -> FastAPI:
         if not authorized(request, token_q):
             return JSONResponse({"error": "unauthorized"}, status_code=403)
         return {"actions": assistant.registry.describe()}
+
+    @app.post("/api/health")
+    async def push_health(request: Request,
+                          token_q: str | None = Query(None, alias="token")):
+        """Receive health data pushed from the phone.
+
+        Some wearables have no cloud API to pull from, so the phone pushes
+        instead. This deliberately accepts a wide range of shapes - a bare
+        record, a list, or an envelope, with aliased field names - because the
+        sender may be Tasker, a third-party exporter, or curl, and rejecting
+        real data over a spelling helps nobody.
+
+        Auth is the same as everything else: loopback is trusted, anything else
+        needs the token AND a private-network address.
+        """
+        header_token = request.headers.get("x-erebus-token")
+        if not authorized(request, token_q or header_token):
+            return JSONResponse({"error": "unauthorized"}, status_code=403)
+
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001 - any malformed body
+            return JSONResponse({"error": "body is not JSON"}, status_code=400)
+
+        records = health_mod.normalise_pushed(payload)
+        if not records:
+            # Almost always a missing or unrecognised date field, so say so
+            # rather than reporting a bare failure.
+            return JSONResponse(
+                {"error": "no usable records - every record needs a date field",
+                 "accepted": 0},
+                status_code=422,
+            )
+
+        written = health_mod.store_pushed(records)
+        days = sorted({r["date"] for r in records})
+        await bus.publish("health", accepted=written, days=len(days))
+        return {"accepted": written, "days": days[:10]}
 
     # -- websocket ----------------------------------------------------------
 
