@@ -41,7 +41,8 @@ def _module(name: str):
 def check_python() -> Check:
     major, minor = sys.version_info[:2]
     version = f"{major}.{minor}.{sys.version_info[2]}"
-    if (major, minor) < (3, 10):
+    # 3.11, not 3.10: asyncio.timeout() is used in the run loop and the tests.
+    if (major, minor) < (3, 11):
         return Check("python", FAIL, version, "Erebus needs Python 3.11 or 3.12.")
     if (major, minor) >= (3, 13):
         return Check("python", WARN, version,
@@ -50,6 +51,13 @@ def check_python() -> Check:
 
 
 def check_core() -> list[Check]:
+    """The packages the server and the CLI need.
+
+    These used to be imported at the top of __main__, which meant a machine
+    missing them never reached this report - it got ModuleNotFoundError first.
+    They are now imported inside `run()`, so doctor can actually say which one
+    is absent.
+    """
     out = []
     for module, label in (("fastapi", "fastapi"), ("uvicorn", "uvicorn"),
                           ("yaml", "pyyaml"), ("httpx", "httpx")):
@@ -62,16 +70,22 @@ def check_core() -> list[Check]:
     return out
 
 
-def check_config() -> Check:
-    try:
-        from .core.config import Config
+def check_config(config) -> Check:
+    """Whether the config loaded, using the one main() already tried to load.
 
-        config = Config.load()
+    Reloading here would raise the same exception that main() caught, so the
+    error it recorded is passed through instead.
+    """
+    error = getattr(config, "load_error", None)
+    if error:
+        return Check("config", FAIL, error,
+                     "Fix the YAML in config.yaml / config.local.yaml.")
+    try:
         actions = len(config.get("actions.apps") or {})
-        return Check("config", PASS, f"{actions} apps configured")
     except Exception as exc:  # noqa: BLE001
         return Check("config", FAIL, f"{type(exc).__name__}: {exc}",
                      "Check config.yaml and config.local.yaml parse as YAML.")
+    return Check("config", PASS, f"{actions} apps configured")
 
 
 def check_port(port: int) -> Check:
@@ -84,7 +98,7 @@ def check_port(port: int) -> Check:
     return Check("port", PASS, f"{port} free")
 
 
-def check_microphone() -> list[Check]:
+def check_microphone(config) -> list[Check]:
     from .pipeline import audio as audio_mod
 
     if not audio_mod.AUDIO_AVAILABLE:
@@ -98,8 +112,24 @@ def check_microphone() -> list[Check]:
     if not devices:
         return [Check("microphone", FAIL, "no input devices",
                       "Plug in a microphone, then: python -m erebus devices")]
-    return [Check("microphone", PASS,
-                  f"{len(devices)} input(s), default: {devices[0]['name'][:40]}")]
+
+    out = [Check("microphone", PASS, f"{len(devices)} input(s) available")]
+
+    # A pinned index that no longer exists fails much later, at stream open,
+    # with an error that does not mention the config.
+    pinned = config.get("audio.input_device")
+    if pinned is not None:
+        known = {d["index"] for d in devices}
+        if isinstance(pinned, int) and pinned not in known:
+            out.append(Check("input device", FAIL,
+                             f"audio.input_device is {pinned}, which no longer exists",
+                             "python -m erebus devices, then update "
+                             "config.local.yaml"))
+        else:
+            match = next((d for d in devices if d["index"] == pinned), None)
+            out.append(Check("input device", PASS,
+                             f"{pinned}: {match['name'][:40]}" if match else str(pinned)))
+    return out
 
 
 def check_stt() -> Check:
@@ -116,13 +146,30 @@ def check_stt() -> Check:
     if cuda is not None:
         try:
             count = cuda.get_cuda_device_count()
-            if count:
-                return Check("speech in", PASS, f"{detail}, {count} CUDA device(s)")
+        except Exception:  # noqa: BLE001
+            return Check("speech in", PASS, detail)
+
+        if not count:
             return Check("speech in", WARN, f"{detail}, no CUDA device",
                          "It will run on CPU. For GPU: pip install "
                          "nvidia-cublas-cu12 nvidia-cudnn-cu12")
-        except Exception:  # noqa: BLE001
-            pass
+
+        # A visible device is not the same as a usable one: get_cuda_device_count
+        # asks the driver, while CTranslate2 additionally needs cuBLAS and
+        # cuDNN at load time. Actually proving it would mean downloading and
+        # loading a model, which is too slow for a diagnostic - so say what was
+        # and was not established rather than reporting a green tick for the
+        # exact failure the docs warn about.
+        libs = all(_module(m) is not None
+                   for m in ("nvidia.cublas", "nvidia.cudnn"))
+        if libs:
+            return Check("speech in", PASS,
+                         f"{detail}, {count} CUDA device(s), cuBLAS/cuDNN present")
+        return Check("speech in", WARN,
+                     f"{detail}, {count} CUDA device(s), cuBLAS/cuDNN not found",
+                     "May still work if they are installed system-wide. The "
+                     "startup log says which it used: 'ready on cuda' or "
+                     "'retrying on CPU'.")
     return Check("speech in", PASS, detail)
 
 
@@ -173,6 +220,15 @@ def check_wake() -> Check:
 async def check_brain(config) -> list[Check]:
     from .pipeline.brain import Brain
 
+    backend = config.get("brain.backend", "ollama")
+    if backend != "ollama":
+        # `backend: echo` is a documented, correct configuration - commands
+        # only, no LLM. Reporting it as a blocking failure would mean a
+        # properly configured machine exits non-zero.
+        return [Check("brain", WARN, f"backend is {backend!r} - no LLM",
+                      "Commands work; conversation and briefings do not. "
+                      "Set brain.backend: ollama to enable them.")]
+
     host = config.get("brain.host", "http://127.0.0.1:11434")
     model = config.get("brain.model", "llama3.1:8b")
     brain = Brain(host=host, model=model)
@@ -182,17 +238,34 @@ async def check_brain(config) -> list[Check]:
     if ready:
         return [Check("brain", PASS, f"{model} via ollama")]
 
-    # Distinguish "not running" from "model not pulled" - different fixes.
+    # Distinguish the cases, which need different fixes. Something listening on
+    # the port is not the same as Ollama being there: check the status and that
+    # the body looks like a model list, or a 500 gets reported as "not pulled"
+    # with a useless `ollama pull` suggestion.
     try:
         import httpx
 
         async with httpx.AsyncClient(timeout=3.0) as client:
-            await client.get(f"{host}/api/tags")
-        return [Check("brain", FAIL, f"ollama running, {model} not pulled",
-                      f"ollama pull {model}")]
-    except Exception:  # noqa: BLE001
-        return [Check("brain", FAIL, f"ollama not reachable at {host}",
-                      "Start it: ollama serve   (or install: winget install Ollama.Ollama)")]
+            response = await client.get(f"{host.rstrip('/')}/api/tags")
+    except Exception as exc:  # noqa: BLE001
+        return [Check("brain", FAIL,
+                      f"nothing reachable at {host} ({type(exc).__name__})",
+                      "Start it: ollama serve   (or: winget install Ollama.Ollama)")]
+
+    if response.status_code != 200:
+        return [Check("brain", FAIL,
+                      f"{host} answered HTTP {response.status_code}",
+                      "Ollama is unhealthy. Restart it: ollama serve")]
+    try:
+        installed = {m["name"] for m in response.json().get("models", [])}
+    except Exception:  # noqa: BLE001 - not JSON, or not Ollama's shape
+        return [Check("brain", FAIL, f"{host} is not an Ollama server",
+                      "Something else is on that port. Check brain.host.")]
+
+    listed = ", ".join(sorted(installed)[:3]) or "none"
+    return [Check("brain", FAIL,
+                  f"ollama running, {model} not pulled (has: {listed})",
+                  f"ollama pull {model}")]
 
 
 def check_vault(config) -> Check:
@@ -236,22 +309,48 @@ def check_windows() -> list[Check]:
     return out
 
 
-async def run() -> int:
+async def _guarded(name: str, thunk) -> list[Check]:
+    """Run one check, converting any failure into a finding.
+
+    Checks import optional backends whose own guards catch only ImportError,
+    while a half-installed native wheel raises OSError or worse. Without this,
+    one broken DLL aborts the entire report - on precisely the machine that
+    most needs to see the rest of it.
+    """
+    try:
+        result = thunk()
+        if hasattr(result, "__await__"):
+            result = await result
+        return result if isinstance(result, list) else [result]
+    except Exception as exc:  # noqa: BLE001
+        return [Check(name, FAIL, f"check itself failed: {type(exc).__name__}: {exc}",
+                      "This is a bug in doctor, not necessarily in your setup.")]
+
+
+async def run(config=None) -> int:
     from .core.config import Config
 
-    config = Config.load()
-    checks: list[Check] = [check_python()]
-    checks += check_core()
-    checks.append(check_config())
-    checks.append(check_port(int(config.get("server.port", 8848))))
-    checks += check_microphone()
-    checks.append(check_stt())
-    checks += check_tts()
-    checks.append(check_wake())
-    checks += await check_brain(config)
-    checks.append(check_vault(config))
-    checks.append(check_profile())
-    checks += check_windows()
+    if config is None:
+        try:
+            config = Config.load()
+        except Exception as exc:  # noqa: BLE001
+            config = Config({})
+            config.load_error = f"{type(exc).__name__}: {exc}"
+
+    checks: list[Check] = []
+    checks += await _guarded("python", check_python)
+    checks += await _guarded("core deps", check_core)
+    checks += await _guarded("config", lambda: check_config(config))
+    checks += await _guarded(
+        "port", lambda: check_port(int(config.get("server.port", 8848) or 8848)))
+    checks += await _guarded("microphone", lambda: check_microphone(config))
+    checks += await _guarded("speech in", check_stt)
+    checks += await _guarded("speech out", check_tts)
+    checks += await _guarded("wake word", check_wake)
+    checks += await _guarded("brain", lambda: check_brain(config))
+    checks += await _guarded("vault", lambda: check_vault(config))
+    checks += await _guarded("profile", check_profile)
+    checks += await _guarded("system control", check_windows)
 
     print()
     for check in checks:

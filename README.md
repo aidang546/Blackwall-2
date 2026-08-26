@@ -346,11 +346,12 @@ python tests/test_brain.py           # the LLM layer, against a scripted Ollama
 python tests/test_briefing.py        # profile, journal, wearable parsing, prompt
 python tests/test_streaming.py       # sentence chunking and barge-in
 python tests/test_opsec.py           # audit chain, vault, lockout, EXIF
+python tests/test_doctor.py          # the diagnostic, against broken installs
 python tests/test_voice_roundtrip.py # speaks commands, transcribes them, routes them
 python tests/test_wake.py            # speaks the wake word at the detector
 ```
 
-The first six need no GPU, model, or microphone. The last two need the voice
+The first seven need no GPU, model, or microphone. The last two need the voice
 extras and one Piper voice, and skip cleanly without them.
 
 `test_brain.py` is the one that guards the security claim: it feeds the router

@@ -36,12 +36,14 @@ import threading
 import time
 import webbrowser
 
-import uvicorn
-
-from .core.assistant import Assistant
-from .core.bus import EventBus
 from .core.config import Config
-from .server.app import create_app
+
+# Assistant, the server and uvicorn are imported inside `run()` rather than
+# here. `doctor` exists to diagnose a broken install, so it must not itself
+# require fastapi and uvicorn to be importable - a machine missing them got
+# ModuleNotFoundError at this line and never reached the report telling it so.
+# The same applies to `say`, `examine` and the rest: none of them need a web
+# server.
 
 BANNER = r"""
    ___ ___ ___ ___ _   _ ___
@@ -407,6 +409,12 @@ def cmd_pair(config: Config) -> int:
 # --------------------------------------------------------------------------
 
 async def run(config: Config, no_voice: bool, open_ui: bool) -> None:
+    import uvicorn
+
+    from .core.assistant import Assistant
+    from .core.bus import EventBus
+    from .server.app import create_app
+
     bus = EventBus()
     bus.bind_loop(asyncio.get_running_loop())
 
@@ -459,7 +467,7 @@ async def run(config: Config, no_voice: bool, open_ui: bool) -> None:
         await assistant.stop()
 
 
-async def _watch_replay(bus: EventBus, queue) -> None:
+async def _watch_replay(bus, queue) -> None:
     """Print the transcript, action and reply from a --fake-mic turn."""
     print("  replaying...\n")
     try:
@@ -546,7 +554,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     setup_logging(args.verbose)
-    config = Config.load()
+
+    try:
+        config = Config.load()
+    except Exception as exc:  # noqa: BLE001 - malformed YAML, bad permissions, anything
+        if args.command == "doctor":
+            # doctor reports this as a finding rather than dying on it - a
+            # broken config is precisely what it is there to tell you about.
+            config = Config({})
+            config.load_error = f"{type(exc).__name__}: {exc}"
+        else:
+            print(f"\n  Could not read the config: {type(exc).__name__}: {exc}")
+            print("  Run `python -m erebus doctor` for a full check.\n")
+            return 2
 
     if args.command == "devices":
         return cmd_devices()
@@ -557,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "doctor":
         from . import doctor
 
-        return asyncio.run(doctor.run())
+        return asyncio.run(doctor.run(config))
     if args.command == "archive":
         if not args.text:
             print("usage: python -m erebus archive https://example.com [--case name]")
