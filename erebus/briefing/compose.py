@@ -173,6 +173,41 @@ class Briefer:
             log.error("health source failed (%s) - continuing without it", exc)
             return []
 
+    async def compose_stream(self, observation: str | None = None):
+        """Stream the briefing, recording it once complete.
+
+        Same inputs and same persona as `compose`; the only difference is that
+        the first sentence can be spoken while the rest is still being written.
+        """
+        if not self.brain.ready:
+            yield ("My reasoning core is offline. I cannot assess you without "
+                   "it. Start Ollama.")
+            return
+
+        snapshots = self.snapshots(self.config.get("briefing.history_days", 14))
+        persona = PERSONA
+        if not self.profile.configured:
+            persona = PERSONA + "\n" + EMPTY_PROFILE_NOTE
+
+        collected: list[str] = []
+        async for fragment in self.brain.complete_stream(
+            system=persona,
+            user=build_prompt(self.profile, self.journal, snapshots, observation),
+            max_tokens=self.config.get("briefing.max_tokens", 320),
+            temperature=self.config.get("briefing.temperature", 0.75),
+        ):
+            collected.append(fragment)
+            yield fragment
+
+        text = "".join(collected).strip()
+        if text:
+            self.journal.append(
+                "briefing",
+                words=len(text.split()),
+                had_health=bool(snapshots),
+                saw=bool(observation),
+            )
+
     async def compose(self, observation: str | None = None) -> str:
         if not self.brain.ready:
             return (

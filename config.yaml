@@ -20,6 +20,17 @@ audio:
   # Hard cap on a single utterance so a stuck mic can't record forever.
   max_utterance: 15.0
 
+  # Talking over Erebus stops it, the way it would stop a person.
+  barge_in:
+    enabled: true
+    # Multiple of silence_threshold that counts as you speaking over it. Its
+    # own voice comes back through the microphone on speakers, so this is
+    # deliberately high - raise it further if it interrupts itself, or use
+    # headphones, where there is no echo path at all.
+    threshold_multiplier: 3.5
+    # How long that level must hold, in seconds. A cough is not an interruption.
+    sustain: 0.35
+
 wake:
   enabled: true
   # openWakeWord ships pretrained models; "erebus" is not one of them, so until

@@ -15,6 +15,7 @@ import logging
 from ..actions.registry import Registry
 from ..briefing.compose import Briefer
 from ..pipeline import audio as audio_mod
+from ..pipeline import chunker
 from ..pipeline.brain import Brain, Decision
 from ..pipeline.stt import Transcriber
 from ..pipeline.tts import Speaker
@@ -94,6 +95,22 @@ class Assistant:
         #: Set while a turn is capturing; the reader diverts frames here.
         self._utterance: asyncio.Queue | None = None
 
+        # Barge-in: talking over it should stop it, the way it would stop a
+        # person. The hard part is that its own voice comes back through the
+        # microphone, so the gate is deliberately high and must be sustained.
+        barge = config.section("audio").get("barge_in", {})
+        self.barge_in_enabled = barge.get("enabled", True)
+        self.barge_in_threshold = (
+            self.audio_config.silence_threshold
+            * float(barge.get("threshold_multiplier", 3.5))
+        )
+        self.barge_in_frames = max(
+            1,
+            int(float(barge.get("sustain", 0.35))
+                * 1000 / audio_mod.FRAME_MS),
+        )
+        self._loud_frames = 0
+
     # -- lifecycle ----------------------------------------------------------
 
     async def start(self) -> None:
@@ -157,6 +174,15 @@ class Assistant:
                 continue
 
             level = audio_mod.rms(frame)
+
+            if self.bus.state is State.SPEAKING:
+                # The visualiser is already being driven by the outgoing audio
+                # while speaking; publishing the microphone level too would
+                # make the wall react to its own voice.
+                self._check_barge_in(level)
+                continue
+            self._loud_frames = 0
+
             await self.bus.publish("level", value=level)
 
             if not self.wake.ready or self.bus.state is not State.IDLE:
@@ -166,6 +192,29 @@ class Assistant:
                 log.info("wake word detected (%.2f)", score)
                 await self.bus.publish("wake", score=score)
                 asyncio.create_task(self.take_turn())
+
+    def _check_barge_in(self, level: float) -> None:
+        """Stop speaking if the operator talks over it.
+
+        A single loud frame is not an interruption - it is a cough, a door, or
+        the assistant's own voice leaking back in. Requiring the level to hold
+        for a few hundred milliseconds is what separates the two without
+        needing echo cancellation.
+
+        On speakers you may still need to raise `threshold_multiplier`; on
+        headphones there is no echo path and the default is comfortable.
+        """
+        if not self.barge_in_enabled:
+            return
+        if level < self.barge_in_threshold:
+            self._loud_frames = 0
+            return
+        self._loud_frames += 1
+        if self._loud_frames < self.barge_in_frames:
+            return
+        self._loud_frames = 0
+        log.info("barge-in at level %.3f", level)
+        self.speaker.interrupt()
 
     async def _utterance_frames(self):
         """Frames routed here by the reader, for the duration of one turn."""
@@ -264,13 +313,12 @@ class Assistant:
 
         # 3. Not a command. Talk.
         if self.brain.ready:
-            reply = await self.brain.converse(text)
-        elif match is not None:
+            await self.say_stream(self.brain.converse_stream(text))
+            return
+        if match is not None:
             await self._execute(match.action, match.value)
             return
-        else:
-            reply = "I have no action for that, and no reasoning core to improvise."
-        await self.say(reply)
+        await self.say("I have no action for that, and no reasoning core to improvise.")
 
     async def _execute(self, action, value: str | None) -> None:
         if self.registry.needs_confirmation(action):
@@ -290,30 +338,70 @@ class Assistant:
     # -- briefing -------------------------------------------------------------
 
     async def briefing(self) -> str:
-        """Compose the daily briefing. Returned text is spoken by the caller."""
+        """Deliver the daily briefing.
+
+        Spoken here rather than returned, because a briefing is the longest
+        thing Erebus ever says and waiting for the whole thing to generate
+        before the first word is the worst case for latency. Returning an empty
+        string tells the registry there is nothing left to speak.
+        """
         if self._briefer is None:
             self._briefer = Briefer(self.config, self.brain)
         await self.bus.publish("briefing", state="composing")
-        text = await self._briefer.compose()
-        await self.bus.publish("briefing", state="ready", text=text)
-        return text
+        await self.bus.set_state(State.THINKING)
+        await self.say_stream(self._briefer.compose_stream())
+        await self.bus.publish("briefing", state="ready")
+        return ""
 
     # -- output -------------------------------------------------------------
 
+    def _on_level(self, value: float) -> None:
+        self.bus.publish_soon("level", value=value)
+
     async def say(self, text: str) -> None:
+        """Speak a known string. Used for short confirmations."""
         if not text:
             return
         await self.bus.publish("reply", text=text)
         await self.bus.set_state(State.SPEAKING, text=text)
-
-        def on_level(value: float) -> None:
-            self.bus.publish_soon("level", value=value)
-
         try:
-            await self.speaker.speak(text, on_level=on_level)
+            await self.speaker.speak(text, on_level=self._on_level)
         except Exception as exc:  # noqa: BLE001
             log.error("speech failed: %s", exc)
         await self.bus.set_state(State.IDLE)
+
+    async def say_stream(self, fragments) -> str:
+        """Speak a reply as the model produces it.
+
+        Used wherever the text is generated rather than known in advance. The
+        first sentence is spoken while the rest is still being written, which
+        is the whole point: the operator hears a reply beginning about a second
+        after he stops talking instead of after the model has finished.
+
+        Returns what was actually spoken - shorter than what was generated if
+        he talked over it.
+        """
+        await self.bus.set_state(State.SPEAKING)
+
+        spoken_so_far: list[str] = []
+
+        async def narrate(chunks):
+            """Pass chunks through, publishing each so the wall's caption keeps up."""
+            async for chunk in chunks:
+                spoken_so_far.append(chunk)
+                await self.bus.publish("reply", text=" ".join(spoken_so_far))
+                yield chunk
+
+        try:
+            spoken = await self.speaker.speak_stream(
+                narrate(chunker.to_sentences(fragments)), on_level=self._on_level
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.error("streaming speech failed: %s", exc)
+            spoken = " ".join(spoken_so_far)
+
+        await self.bus.set_state(State.IDLE)
+        return spoken
 
     def interrupt(self) -> None:
         self.speaker.interrupt()

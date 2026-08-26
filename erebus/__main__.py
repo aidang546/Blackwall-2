@@ -175,10 +175,21 @@ def cmd_brief(config: Config, out: str | None, observe: str | None) -> int:
         if not briefer.profile.configured:
             print("\n  No profile.local.yaml - the briefing will say so.")
             print("  Copy profile.example.yaml and fill it in.\n")
-        text = await briefer.compose(observation=observe)
-        await brain.close()
+        # Stream to the terminal exactly as the daemon speaks it, so the
+        # chunking is visible while you are tuning the persona.
+        from .pipeline.chunker import to_sentences
 
-        print("\n" + "\n".join(_wrap(text, 76)) + "\n")
+        chunks = []
+        print()
+        async for chunk in to_sentences(briefer.compose_stream(observation=observe)):
+            chunks.append(chunk)
+            print("\n".join(_wrap(chunk, 76)))
+        print()
+        text = " ".join(chunks)
+        await brain.close()
+        if not text.strip():
+            print("  Nothing came back.\n")
+            return 1
 
         if out:
             from .pipeline.tts import Speaker, write_wav

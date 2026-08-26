@@ -23,6 +23,7 @@ horizontal seam when it is listening or speaking.
 | **Macros** | "gaming mode" — sets volume, opens Steam and Discord in one word |
 | **Conversation** | anything that isn't a command goes to a local LLM |
 | **Briefings** | "brief me" — where you stand, in a register that does not flatter you |
+| **Talks back fast** | streams as it thinks; talk over it and it stops |
 
 Everything it can do lives in `config.yaml`. Adding a command is three lines of
 YAML; see [Adding your own commands](#adding-your-own-commands).
@@ -77,8 +78,54 @@ with synthetic audio. No models, no GPU, nothing to download.
 |---|---|
 | say **"erebus"** | wake it |
 | **space** | push to talk (skips the wake word) |
-| **esc** | cut it off mid-sentence |
+| **talk over it** | it stops, the way a person would |
+| **esc** | cut it off from the keyboard |
 | type in the console | same routing as speech, useful when muted |
+
+### Responsiveness
+
+Replies are streamed. The model generates, the first sentence is synthesised
+and spoken while the rest is still being written, and synthesis of the next
+sentence overlaps playback of the current one — so after the first chunk there
+is no gap between sentences.
+
+Measured on one reply, comparing the same generation both ways:
+
+```
+  generation, start to finish        7.20s
+  synthesising the whole reply       1.10s
+  BEFORE  first word after           8.30s   generate all, then synthesise all
+  AFTER   first word after           2.27s   first chunk only
+```
+
+73% of the dead air, gone. Those absolute numbers are a slow CPU box; on a GPU
+both shrink and the ratio holds.
+
+The chunker cuts at sentence ends, and at clause boundaries once a chunk is
+long enough to be worth speaking alone. The **first** cut is allowed to be much
+shorter than later ones — it is the only one you experience as latency, since
+every cut after it happens while audio is already playing.
+
+### Barge-in
+
+Talking over Erebus stops it. The awkward part is that its own voice comes back
+through the microphone, so the gate is deliberately high and has to be
+sustained — a single loud frame is a cough or an echo, not an interruption:
+
+```yaml
+audio:
+  barge_in:
+    enabled: true
+    threshold_multiplier: 3.5   # raise if it interrupts itself
+    sustain: 0.35               # seconds the level must hold
+```
+
+On headphones there is no echo path and the defaults are comfortable. On
+speakers, raise `threshold_multiplier` if it cuts itself off.
+
+Barge-in **stops** it; it does not then start listening. That is deliberate —
+auto-listening on an echo-triggered barge-in would have it transcribe its own
+tail and act on the result. Say the wake word, or hit space.
 
 ---
 
@@ -279,11 +326,12 @@ python tests/test_routing.py         # the matcher, against real phrasings
 python tests/test_e2e.py             # boots the daemon, drives it over the websocket
 python tests/test_brain.py           # the LLM layer, against a scripted Ollama
 python tests/test_briefing.py        # profile, journal, wearable parsing, prompt
+python tests/test_streaming.py       # sentence chunking and barge-in
 python tests/test_voice_roundtrip.py # speaks commands, transcribes them, routes them
 python tests/test_wake.py            # speaks the wake word at the detector
 ```
 
-The first four need no GPU, model, or microphone. The last two need the voice
+The first five need no GPU, model, or microphone. The last two need the voice
 extras and one Piper voice, and skip cleanly without them.
 
 `test_brain.py` is the one that guards the security claim: it feeds the router

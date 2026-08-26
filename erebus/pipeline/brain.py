@@ -155,6 +155,71 @@ class Brain:
         value = parsed.get("value")
         return Decision(kind="action", action=action, value=str(value) if value else None)
 
+    async def _chat_stream(self, messages: list[dict], temperature: float,
+                           max_tokens: int):
+        """Yield content fragments as Ollama produces them.
+
+        Ollama streams newline-delimited JSON, one object per token-ish chunk.
+        The point is not throughput - it is that the first sentence can be
+        spoken while the rest is still being generated, which is the difference
+        between a reply that starts in a second and one that starts in six.
+        """
+        assert self._client is not None
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+        }
+        async with self._client.stream(
+            "POST", f"{self.host}/api/chat", json=payload
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    packet = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                fragment = packet.get("message", {}).get("content", "")
+                if fragment:
+                    yield fragment
+                if packet.get("done"):
+                    return
+
+    async def converse_stream(self, utterance: str):
+        """Stream a reply, recording the whole thing to history once complete."""
+        if not self._available:
+            yield "My reasoning core is offline. Commands still function."
+            return
+
+        messages = [{"role": "system", "content": self.persona}]
+        messages.extend(self._history)
+        messages.append({"role": "user", "content": utterance})
+
+        collected: list[str] = []
+        try:
+            async for fragment in self._chat_stream(
+                messages, self.temperature, self.max_tokens
+            ):
+                collected.append(fragment)
+                yield fragment
+        except Exception as exc:  # noqa: BLE001
+            log.error("streaming conversation failed: %s", exc)
+            if not collected:
+                yield "The connection faltered. Say it again."
+            return
+
+        reply = "".join(collected).strip()
+        if reply:
+            # Only a completed reply goes into history. Recording a fragment
+            # the operator interrupted would teach the model it said something
+            # it never finished saying.
+            self._history.append({"role": "user", "content": utterance})
+            self._history.append({"role": "assistant", "content": reply})
+
     # -- one-shot -----------------------------------------------------------
 
     async def complete(
@@ -184,6 +249,29 @@ class Brain:
         except Exception as exc:  # noqa: BLE001
             log.error("completion failed: %s", exc)
             return ""
+
+    async def complete_stream(
+        self,
+        system: str,
+        user: str,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ):
+        """Streaming counterpart to `complete`. Nothing is remembered."""
+        if not self._available:
+            return
+        try:
+            async for fragment in self._chat_stream(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=self.temperature if temperature is None else temperature,
+                max_tokens=self.max_tokens if max_tokens is None else max_tokens,
+            ):
+                yield fragment
+        except Exception as exc:  # noqa: BLE001
+            log.error("streaming completion failed: %s", exc)
 
     # -- conversation -------------------------------------------------------
 

@@ -287,6 +287,107 @@ class Speaker:
             return
         await self._play(audio, sample_rate, on_level)
 
+    async def speak_stream(self, chunks, on_level=None) -> str:
+        """Speak chunks as they arrive. Returns the text actually spoken.
+
+        Synthesis and playback run concurrently: while chunk N is playing,
+        chunk N+1 is already being generated, so after the first chunk there is
+        no gap between sentences. One output stream is held open across the
+        whole reply - reopening it per chunk puts an audible click and a few
+        tens of milliseconds of silence between every sentence.
+
+        The return value is what was *spoken*, which is not the same as what
+        was generated if the operator talked over it. Callers use that to
+        record only what he actually heard.
+        """
+        self._stop.clear()
+
+        if self.backend == "sapi" or self._voice is None:
+            # SAPI has no streaming path; collect and speak once.
+            collected = [chunk async for chunk in chunks]
+            text = " ".join(collected).strip()
+            await self._speak_sapi(text)
+            return text
+
+        if not PLAYBACK_AVAILABLE:
+            return " ".join([chunk async for chunk in chunks]).strip()
+
+        # Bounded so a fast model cannot synthesise the whole reply into memory
+        # ahead of a slow speaker.
+        audio_queue: asyncio.Queue = asyncio.Queue(maxsize=3)
+        spoken: list[str] = []
+
+        async def produce() -> None:
+            try:
+                async for chunk in chunks:
+                    if self._stop.is_set():
+                        break
+                    audio, rate = await self.synthesize(chunk)
+                    if audio is not None and len(audio):
+                        await audio_queue.put((chunk, audio, rate))
+            except Exception as exc:  # noqa: BLE001
+                log.error("streaming synthesis failed: %s", exc)
+            finally:
+                await audio_queue.put(None)
+
+        producer = asyncio.create_task(produce())
+        try:
+            await self._play_queue(audio_queue, spoken, on_level)
+        finally:
+            producer.cancel()
+            # Drain so a cancelled producer's queue puts do not warn.
+            while not audio_queue.empty():
+                audio_queue.get_nowait()
+        return " ".join(spoken).strip()
+
+    async def _play_queue(self, audio_queue, spoken: list, on_level=None) -> None:
+        loop = asyncio.get_running_loop()
+        stream = None
+        block = 0
+        try:
+            while True:
+                item = await audio_queue.get()
+                if item is None:
+                    break
+                chunk, audio, sample_rate = item
+                if self._stop.is_set():
+                    break
+
+                if stream is None:
+                    stream = sd.OutputStream(
+                        samplerate=sample_rate, channels=1,
+                        dtype="float32", device=self.device,
+                    )
+                    stream.start()
+                    block = max(256, int(sample_rate * 0.03))
+
+                interrupted = False
+                for start in range(0, len(audio), block):
+                    if self._stop.is_set():
+                        interrupted = True
+                        break
+                    piece = audio[start : start + block]
+                    if on_level is not None:
+                        peak = float(np.abs(piece).max()) if len(piece) else 0.0
+                        on_level(peak)
+                    await loop.run_in_executor(None, stream.write, piece)
+
+                if interrupted:
+                    break
+                spoken.append(chunk)
+        finally:
+            if on_level is not None:
+                on_level(0.0)
+            if stream is not None:
+                # abort(), not stop(): stop() drains the buffer, so an
+                # interruption would still play the half second already queued
+                # in the device - exactly the part the operator spoke over.
+                if self._stop.is_set():
+                    stream.abort()
+                else:
+                    stream.stop()
+                stream.close()
+
     async def _play(self, audio, sample_rate: int, on_level=None) -> None:
         """Stream out in blocks, reporting the envelope as we go."""
         block = max(256, int(sample_rate * 0.03))   # ~30 ms, matches a 33fps UI
