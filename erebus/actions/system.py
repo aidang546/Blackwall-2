@@ -31,19 +31,35 @@ def _press(vk: int) -> None:
 
 
 def _volume_interface():
-    """Get the master audio endpoint via pycaw, or None."""
+    """Get the master audio endpoint via pycaw, or None.
+
+    COM has to be initialised on whichever thread touches it, and these
+    handlers run inside a thread-pool executor rather than on the main thread -
+    so without this the very first "volume up" fails with "CoInitialize has not
+    been called". Calling it again on an already-initialised thread is
+    harmless; it returns S_FALSE rather than erroring.
+    """
     if not IS_WINDOWS:
         return None
     try:
+        import comtypes
         from comtypes import CLSCTX_ALL
         from ctypes import POINTER, cast
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+
+        try:
+            comtypes.CoInitialize()
+        except Exception:  # noqa: BLE001 - already initialised on this thread
+            pass
 
         devices = AudioUtilities.GetSpeakers()
         interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
         return cast(interface, POINTER(IAudioEndpointVolume))
     except Exception as exc:  # noqa: BLE001
-        log.warning("pycaw unavailable (%s) - volume control disabled", exc)
+        log.warning(
+            "audio endpoint unavailable (%s: %s) - volume control disabled",
+            type(exc).__name__, exc,
+        )
         return None
 
 

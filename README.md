@@ -56,6 +56,16 @@ ollama pull llama3.1:8b
 python -m erebus
 ```
 
+Stuck at any point, run this instead of guessing:
+
+```powershell
+python -m erebus doctor
+```
+
+It checks Python, every dependency, the microphone, CUDA, the voice files,
+Ollama, and your config — and prints the exact command to fix whatever is
+broken. Nothing about a first run needs to be diagnosed one error at a time.
+
 Whisper here runs on CTranslate2, **not torch** — installing torch does nothing
 for it. What it wants on an NVIDIA card is cuBLAS and cuDNN. Without them it
 logs the CUDA failure and falls back to CPU rather than refusing to start, so

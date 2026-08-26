@@ -1,5 +1,6 @@
 """Command line entry point.
 
+    python -m erebus doctor          check everything and print what to fix
     python -m erebus                 run the assistant
     python -m erebus --no-voice      UI + server only (no models needed)
     python -m erebus devices         list microphones
@@ -512,7 +513,8 @@ def main(argv: list[str] | None = None) -> int:
                         choices=["run", "devices", "actions", "say", "pair",
                                  "voices", "fetch-voice", "brief",
                                  "archive", "examine", "domain", "cases",
-                                 "audit", "security", "vault", "rotate-token"])
+                                 "audit", "security", "vault", "rotate-token",
+                                 "doctor"])
     parser.add_argument("text", nargs="*",
                         help="text for `say`, or a voice name for `fetch-voice`")
     parser.add_argument("--out", metavar="FILE",
@@ -552,6 +554,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_actions(config)
     if args.command == "pair":
         return cmd_pair(config)
+    if args.command == "doctor":
+        from . import doctor
+
+        return asyncio.run(doctor.run())
     if args.command == "archive":
         if not args.text:
             print("usage: python -m erebus archive https://example.com [--case name]")

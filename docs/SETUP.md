@@ -213,6 +213,32 @@ run anything in your registry.
 
 ---
 
+## Check everything at once
+
+```powershell
+python -m erebus doctor
+```
+
+```
+  ok    python           3.12.4
+  ok    config           8 apps configured
+  FAIL  microphone       sounddevice not available
+                           -> pip install -r requirements-voice.txt
+  warn  speech in        faster-whisper installed, no CUDA device
+                           -> It will run on CPU. For GPU: pip install
+                              nvidia-cublas-cu12 nvidia-cudnn-cu12
+  FAIL  brain            ollama not reachable at http://127.0.0.1:11434
+                           -> Start it: ollama serve
+```
+
+`FAIL` is blocking for that feature; `warn` is optional. Erebus starts either
+way — every stage degrades rather than refusing to run — so a failure means
+that one capability is switched off, not that nothing works.
+
+Run it first when anything misbehaves. It is faster than reading a log.
+
+---
+
 ## Troubleshooting
 
 **It wakes up at random.** Raise `wake.threshold` toward 0.7. The stock model
