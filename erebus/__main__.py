@@ -8,6 +8,7 @@
     python -m erebus say "x" --out a.wav --dry     render to a file, no effects
     python -m erebus voices          list downloaded voices
     python -m erebus fetch-voice NAME  download a Piper voice
+    python -m erebus brief           compose today's briefing (add --out a.wav)
     python -m erebus pair            print the URL and QR data for your phone
 """
 
@@ -155,6 +156,59 @@ def cmd_voices(config: Config) -> int:
     return 0
 
 
+def cmd_brief(config: Config, out: str | None, observe: str | None) -> int:
+    """Compose a briefing and print it, optionally speaking it."""
+    from .briefing.compose import Briefer
+    from .pipeline.brain import Brain
+
+    async def go() -> int:
+        brain = Brain(
+            backend=config.get("brain.backend", "ollama"),
+            host=config.get("brain.host", "http://127.0.0.1:11434"),
+            model=config.get("brain.model", "llama3.1:8b"),
+        )
+        if not await brain.load():
+            print("\n  Ollama is not reachable, so there is nothing to think with.")
+            print("  Start it with `ollama serve`, then try again.\n")
+            return 1
+        briefer = Briefer(config, brain)
+        if not briefer.profile.configured:
+            print("\n  No profile.local.yaml - the briefing will say so.")
+            print("  Copy profile.example.yaml and fill it in.\n")
+        text = await briefer.compose(observation=observe)
+        await brain.close()
+
+        print("\n" + "\n".join(_wrap(text, 76)) + "\n")
+
+        if out:
+            from .pipeline.tts import Speaker, write_wav
+
+            speaker = Speaker(
+                backend=config.get("tts.backend", "piper"),
+                voice=config.get("tts.voice"),
+                effects=config.section("tts").get("effects", {}),
+                rate=config.get("tts.rate", 1.0),
+            )
+            if speaker.load():
+                audio, rate = await speaker.synthesize(text)
+                write_wav(out, audio, rate)
+                print(f"  spoken to {out}\n")
+        return 0
+
+    return asyncio.run(go())
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    import textwrap
+
+    lines = []
+    for paragraph in text.split("\n"):
+        lines.extend(textwrap.wrap(paragraph, width,
+                                   initial_indent="  ", subsequent_indent="  ")
+                     or [""])
+    return lines
+
+
 def cmd_pair(config: Config) -> int:
     token = config.resolve_token()
     port = config.get("server.port", 8848)
@@ -282,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="erebus", description="Erebus voice assistant")
     parser.add_argument("command", nargs="?", default="run",
                         choices=["run", "devices", "actions", "say", "pair",
-                                 "voices", "fetch-voice"])
+                                 "voices", "fetch-voice", "brief"])
     parser.add_argument("text", nargs="*",
                         help="text for `say`, or a voice name for `fetch-voice`")
     parser.add_argument("--out", metavar="FILE",
@@ -291,6 +345,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="say: bypass the voice effects chain")
     parser.add_argument("--voice", metavar="NAME",
                         help="say: override the configured voice")
+    parser.add_argument("--observe", metavar="TEXT",
+                        help="brief: describe what the assistant can see "
+                             "(stands in for the webcam until vision lands)")
     parser.add_argument("--fake-mic", metavar="WAV",
                         help="run: feed a WAV file in place of the microphone, "
                              "take one turn from it, and exit")
@@ -310,6 +367,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_actions(config)
     if args.command == "pair":
         return cmd_pair(config)
+    if args.command == "brief":
+        return cmd_brief(config, args.out, args.observe)
     if args.command == "voices":
         return cmd_voices(config)
     if args.command == "fetch-voice":

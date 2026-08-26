@@ -20,3 +20,7 @@ models/
 # Audio scratch
 *.wav
 !erebus/server/static/sfx/*.wav
+
+# Personal briefing data - your business, your numbers, your training
+profile.local.yaml
+journal.local.jsonl

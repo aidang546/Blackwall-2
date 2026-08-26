@@ -92,6 +92,31 @@ ui:
   # Open the window automatically when the daemon starts.
   autolaunch: true
 
+briefing:
+  # Your own facts live in profile.local.yaml (gitignored). Start from
+  # profile.example.yaml - the briefing is only as specific as that file.
+  history_days: 14        # how far back it looks at the journal and wearable
+  max_tokens: 320         # it is spoken aloud; long briefings do not get heard
+  temperature: 0.75       # some variation, or every morning sounds identical
+
+  # Wearable data. `source: none` is fine - the briefing just has less to work
+  # with and will say so rather than invent figures.
+  #
+  #   source: csv     any device that exports CSV (Whoop, Garmin, Oura, Fitbit).
+  #                   Name the columns yourself; `scale` converts units.
+  #   source: apple   Apple Health's export.xml, streamed.
+  health:
+    source: none
+    # path: "C:/Users/you/Downloads/physiological_cycles.csv"
+    # columns:
+    #   date:        "Cycle start time"
+    #   sleep_hours: "Asleep duration (min)"
+    #   resting_hr:  "Resting heart rate (bpm)"
+    #   hrv:         "Heart rate variability (ms)"
+    #   strain:      "Day Strain"
+    # scale:
+    #   sleep_hours: 0.01666667      # minutes -> hours
+
 safety:
   # Commands are only ever run from the registry below - Erebus cannot invent a
   # shell command. Set to false to also allow LLM-proposed shell (NOT advised).
@@ -147,6 +172,15 @@ actions:
     sleep:          { phrases: ["go to sleep", "sleep the computer"] }
     shutdown:       { phrases: ["shut down", "power off"] }
     restart:        { phrases: ["restart", "reboot"] }
+
+
+  # --- Built in ------------------------------------------------------------
+  # Implemented in Python rather than as a shell string, but declared here so
+  # they match by phrase like everything else. Rename or add phrasings freely.
+  builtin:
+    briefing:
+      phrases: ["brief me", "briefing", "status report", "where am i",
+                "how am i doing", "assess me"]
 
   # --- Custom macros -------------------------------------------------------
   # A macro is a named list of steps. Steps are `run:` (shell) or `do:`

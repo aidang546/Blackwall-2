@@ -22,6 +22,7 @@ horizontal seam when it is listening or speaking.
 | **System control** | volume, media keys, lock, sleep, shutdown |
 | **Macros** | "gaming mode" — sets volume, opens Steam and Discord in one word |
 | **Conversation** | anything that isn't a command goes to a local LLM |
+| **Briefings** | "brief me" — where you stand, in a register that does not flatter you |
 
 Everything it can do lives in `config.yaml`. Adding a command is three lines of
 YAML; see [Adding your own commands](#adding-your-own-commands).
@@ -208,6 +209,33 @@ client as a remote.
 
 ---
 
+## Briefings
+
+Say **"brief me"** and it tells you where you stand against what you said you
+would do — reading your commitments, your journal and your wearable export, and
+never inventing a figure it was not given.
+
+```
+Two videos in thirty days against a target of one a week. You are four behind
+and the gap is not closing. Your resting heart rate has climbed while your
+variability has fallen and you are sleeping five and a half hours, so the two
+sessions you managed this week were not discipline, they were what was left
+after you spent yourself on nothing.
+```
+
+It fires only when asked. Setup is one file:
+
+```powershell
+copy profile.example.yaml profile.local.yaml   # then fill it in
+python -m erebus brief
+```
+
+Recovery trends are computed in Python before the model sees them, so it cannot
+get your numbers backwards — and when the data shows you are under-recovered it
+lowers the training demand rather than raising it.
+
+Full guide, including wearable setup: **[docs/BRIEFING.md](docs/BRIEFING.md)**.
+
 ## Auditioning the voice
 
 You do not need a sound card to work on the voice — render it to a file:
@@ -249,11 +277,12 @@ while you fix the phrasing.
 python tests/test_routing.py         # the matcher, against real phrasings
 python tests/test_e2e.py             # boots the daemon, drives it over the websocket
 python tests/test_brain.py           # the LLM layer, against a scripted Ollama
+python tests/test_briefing.py        # profile, journal, wearable parsing, prompt
 python tests/test_voice_roundtrip.py # speaks commands, transcribes them, routes them
 python tests/test_wake.py            # speaks the wake word at the detector
 ```
 
-The first three need no GPU, model, or microphone. The last two need the voice
+The first four need no GPU, model, or microphone. The last two need the voice
 extras and one Piper voice, and skip cleanly without them.
 
 `test_brain.py` is the one that guards the security claim: it feeds the router

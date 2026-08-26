@@ -13,6 +13,7 @@ import asyncio
 import logging
 
 from ..actions.registry import Registry
+from ..briefing.compose import Briefer
 from ..pipeline import audio as audio_mod
 from ..pipeline.brain import Brain, Decision
 from ..pipeline.stt import Transcriber
@@ -78,6 +79,13 @@ class Assistant:
             temperature=config.get("brain.temperature", 0.6),
             history_turns=config.get("brain.history_turns", 6),
         )
+
+        # Built lazily on first use: it reads the profile and the wearable
+        # export, and neither should be touched on a run that never asks for a
+        # briefing.
+        self._briefer: Briefer | None = None
+
+        self.registry.register_builtin("briefing", self.briefing)
 
         self._pending_confirm: tuple | None = None
         self._busy = asyncio.Lock()
@@ -278,6 +286,17 @@ class Assistant:
         else:
             # Silent success still needs to land somewhere the operator can see.
             await self.bus.publish("done", name=action.name)
+
+    # -- briefing -------------------------------------------------------------
+
+    async def briefing(self) -> str:
+        """Compose the daily briefing. Returned text is spoken by the caller."""
+        if self._briefer is None:
+            self._briefer = Briefer(self.config, self.brain)
+        await self.bus.publish("briefing", state="composing")
+        text = await self._briefer.compose()
+        await self.bus.publish("briefing", state="ready", text=text)
+        return text
 
     # -- output -------------------------------------------------------------
 

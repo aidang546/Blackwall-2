@@ -1,0 +1,62 @@
+# =============================================================================
+#  Copy to profile.local.yaml and fill in. That file is gitignored.
+#
+#  This is the difference between a briefing that knows you and one that
+#  produces motivational wallpaper. Everything is optional, but the more of it
+#  you write, the less generic the output. Erebus is told never to invent
+#  anything that is not here.
+#
+#  Be honest in `known_weaknesses` in particular. It gets used against you.
+# =============================================================================
+
+name: Aidan
+
+# What the business is and how it actually makes money. Plain prose is fine -
+# this goes to the model as-is. Be concrete about the mechanism.
+business: |
+  Audience / content-led. Growth comes from consistent output and reach,
+  and revenue follows from converting that audience.
+
+  # Replace with the real thing. What do you publish, where, and how does
+  # attention turn into money? Name the platforms and the offer.
+
+# The cadence you have committed to. These get quoted back at you when missed.
+commitments:
+  publish: "3 per week"
+  outreach: "5 conversations per week"
+  train: "4 sessions per week"
+
+# The numbers that matter and where they currently stand. Update these when
+# they move - Erebus reports the figure you gave it, not a guess.
+metrics:
+  subscribers: 0
+  monthly_revenue: 0
+  posts_last_30_days: 0
+
+# Training. Split, current working weights, what you are driving toward.
+training:
+  split: "push / pull / legs / upper"
+  goal: "add 10kg to the squat by December"
+  lifts:
+    squat: "100kg x 5"
+    bench: "80kg x 5"
+    deadlift: "140kg x 3"
+  # Anything Erebus must not push you through. It respects these absolutely.
+  injuries: []
+
+# Non-negotiables, in your own words. Quoted verbatim when you break one.
+standards:
+  - "I do not skip a session because I am tired. Only because I am injured."
+  - "I publish on schedule whether or not I think the piece is good."
+  - "No phone for the first hour of the day."
+
+# The patterns you already know about yourself. This is the sharpest input the
+# briefing has - it lets Erebus name the avoidance instead of guessing at it.
+known_weaknesses:
+  - "I rewrite drafts instead of shipping them."
+  - "I train hard for two weeks then miss a week."
+  - "I do the work that feels productive instead of the work that sells."
+
+notes: |
+  Anything else worth knowing. Deadlines, a launch, a competitor, a bad habit
+  you are trying to break, the reason any of this matters.

@@ -1,0 +1,260 @@
+"""The briefing: profile, journal, wearable parsing, and the prompt it builds.
+
+The prompt assertions matter more than they look. The first working version of
+this told the model that a *target* ("publish 1 per week") was an achievement,
+and it duly congratulated the operator for work he had not done. A briefing
+that fabricates progress is worse than no briefing, so the labelling is pinned
+here.
+
+No model and no network. `python tests/test_briefing.py`
+"""
+
+from __future__ import annotations
+
+import csv
+import json
+import pathlib
+import sys
+import tempfile
+from datetime import date, datetime, timedelta
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+from erebus.briefing import health as health_mod        # noqa: E402
+from erebus.briefing.compose import PERSONA, build_prompt   # noqa: E402
+from erebus.briefing.journal import Journal             # noqa: E402
+from erebus.briefing.profile import Profile             # noqa: E402
+
+FAILURES = 0
+
+
+def check(label: str, ok: bool, detail: str = "") -> None:
+    global FAILURES
+    FAILURES += not ok
+    print(f"  {'ok  ' if ok else 'FAIL'}  {label}{'  ' + detail if detail else ''}")
+
+
+def write_yaml(tmp: pathlib.Path, text: str) -> pathlib.Path:
+    path = tmp / "profile.yaml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_profile(tmp: pathlib.Path) -> None:
+    print("\nPROFILE")
+    empty = Profile()
+    check("an absent profile is not 'configured'", not empty.configured)
+
+    path = write_yaml(tmp, """
+name: Test
+business: "Content-led."
+commitments:
+  publish: "3 per week"
+metrics:
+  subscribers: 4200
+training:
+  goal: "squat 110"
+standards:
+  - "I publish on schedule."
+known_weaknesses:
+  - "I rewrite instead of shipping."
+""")
+    profile = Profile.load(path)
+    check("loads", profile.name == "Test" and profile.configured)
+
+    rendered = profile.as_prompt()
+    # The bug that caused fabricated progress.
+    check("commitments are labelled TARGETS, not achievements",
+          "TARGETS" in rendered and "PROMISED" in rendered)
+    check("metrics are labelled as actuals", "RECORDED FACTS" in rendered)
+    check("standards are carried through", "I publish on schedule." in rendered)
+    check("weaknesses are carried through", "rewrite instead of shipping" in rendered)
+
+    empty_render = Profile(name="x").as_prompt()
+    check("empty sections are omitted, not padded",
+          "TARGETS" not in empty_render and "Training" not in empty_render)
+
+    bad = write_yaml(tmp, "name: Test\nnonsense_key: 1\n")
+    check("an unknown key does not crash the load", Profile.load(bad).name == "Test")
+
+    broken = write_yaml(tmp, "name: [unclosed\n")
+    check("invalid YAML degrades to an empty profile",
+          not Profile.load(broken).configured)
+
+
+def test_journal(tmp: pathlib.Path) -> None:
+    print("\nJOURNAL")
+    path = tmp / "journal.jsonl"
+    journal = Journal(path)
+
+    check("no history is not an error", journal.days_since("briefing") is None)
+    check("empty journal reads as first briefing",
+          "first briefing" in journal.as_prompt())
+
+    journal.append("briefing", words=140)
+    journal.append("trained", session="legs")
+    check("entries come back", len(list(journal.entries())) == 2)
+    check("days_since is zero for today", journal.days_since("briefing") == 0)
+    check("last() finds the right kind",
+          journal.last("trained").data["session"] == "legs")
+
+    # Backdated entries, written directly, to exercise streaks.
+    with open(path, "a", encoding="utf-8") as fh:
+        for days_ago in (1, 2, 3, 5):
+            ts = datetime.now() - timedelta(days=days_ago)
+            fh.write(json.dumps({"ts": ts.isoformat(), "kind": "published"}) + "\n")
+    check("streak counts the consecutive run ending yesterday",
+          journal.streak("published") == 3, f"{journal.streak('published')}")
+    check("a gap ends the streak when nothing is tolerated",
+          journal.streak("published", allow_gap=0) == 3)
+    check("allow_gap bridges the missing day and picks up the one beyond it",
+          journal.streak("published", allow_gap=1) == 4,
+          f"{journal.streak('published', allow_gap=1)}")
+
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write("this is not json\n")
+    check("one corrupt line does not lose the history",
+          len(list(journal.entries())) == 6)
+
+    check("history renders for the prompt", "published" in journal.as_prompt())
+
+
+def test_health_csv(tmp: pathlib.Path) -> None:
+    print("\nHEALTH (csv)")
+    path = tmp / "whoop.csv"
+    today = date.today()
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["Cycle start time", "Asleep duration (min)",
+                         "Resting heart rate (bpm)", "HRV", "Day Strain"])
+        for ago, sleep, rhr, hrv, strain in [
+            (5, 480, 50, 80, 14.0), (4, 470, 50, 78, 13.0),
+            (3, 400, 55, 60, 5.0),  (2, 360, 58, 52, 4.0),
+            (1, 340, 60, 45, 3.0),
+        ]:
+            writer.writerow([(today - timedelta(days=ago)).isoformat(),
+                             sleep, rhr, hrv, strain])
+
+    source = health_mod.build({
+        "source": "csv", "path": str(path),
+        "columns": {"date": "Cycle start time",
+                    "sleep_hours": "Asleep duration (min)",
+                    "resting_hr": "Resting heart rate (bpm)",
+                    "hrv": "HRV", "strain": "Day Strain"},
+        "scale": {"sleep_hours": 1 / 60},
+    })
+    snaps = source.snapshots(14)
+    check("reads every row", len(snaps) == 5, f"{len(snaps)}")
+    check("newest is last", snaps[-1].day > snaps[0].day)
+    check("unit scaling is applied", abs(snaps[0].sleep_hours - 8.0) < 0.01,
+          f"{snaps[0].sleep_hours:.2f}h from 480min")
+
+    check("high strain counts as a training day", snaps[0].trained)
+    check("low strain does not", not snaps[-1].trained)
+
+    verdict = health_mod.interpret(snaps)
+    check("spots under-recovery", "UNDER-RECOVERED" in verdict)
+    check("spots short sleep", "SHORT SLEEP" in verdict)
+    check("under-recovery forbids pushing harder",
+          "NOT more training" in verdict)
+
+    summary = health_mod.summarise(snaps)
+    check("summary computes deltas rather than leaving them to the model",
+          "average" in summary and "WHAT THIS MEANS" in summary)
+
+    missing = health_mod.build({"source": "csv", "path": str(tmp / "nope.csv"),
+                                "columns": {"date": "d"}})
+    check("a missing export yields nothing rather than raising",
+          missing.snapshots() == [])
+    check("no data is stated, never invented",
+          health_mod.summarise([]) == "No wearable data available.")
+
+    check("an unknown source falls back to none",
+          isinstance(health_mod.build({"source": "nonsense"}),
+                     health_mod.NoHealthSource))
+    check("a source missing its path falls back to none",
+          isinstance(health_mod.build({"source": "csv"}),
+                     health_mod.NoHealthSource))
+
+
+def test_health_apple(tmp: pathlib.Path) -> None:
+    print("\nHEALTH (apple)")
+    path = tmp / "export.xml"
+    today = date.today()
+    rows = []
+    for ago in range(1, 4):
+        day = (today - timedelta(days=ago)).isoformat()
+        rows.append(
+            f'<Record type="HKQuantityTypeIdentifierRestingHeartRate" '
+            f'startDate="{day} 08:00:00 +0000" value="55"/>'
+        )
+        rows.append(
+            f'<Record type="HKQuantityTypeIdentifierStepCount" '
+            f'startDate="{day} 09:00:00 +0000" value="3000"/>'
+        )
+        rows.append(
+            f'<Record type="HKQuantityTypeIdentifierStepCount" '
+            f'startDate="{day} 18:00:00 +0000" value="4000"/>'
+        )
+        rows.append(
+            f'<Workout workoutActivityType="HKWorkoutActivityTypeTraditionalStrengthTraining" '
+            f'startDate="{day} 17:00:00 +0000"/>'
+        )
+    path.write_text("<HealthData>" + "".join(rows) + "</HealthData>", encoding="utf-8")
+
+    snaps = health_mod.build({"source": "apple", "path": str(path)}).snapshots(14)
+    check("parses records", len(snaps) == 3, f"{len(snaps)}")
+    check("single readings are taken as-is", snaps[-1].resting_hr == 55)
+    check("cumulative measures are summed across the day",
+          snaps[-1].steps == 7000, f"{snaps[-1].steps}")
+    check("workouts make it a training day", snaps[-1].trained)
+
+
+def test_prompt(tmp: pathlib.Path) -> None:
+    print("\nPROMPT & PERSONA")
+    profile = Profile.load(write_yaml(tmp, """
+name: Test
+business: "Content-led."
+commitments:
+  publish: "1 per week"
+metrics:
+  videos_last_30_days: 2
+"""))
+    journal = Journal(tmp / "empty.jsonl")
+    prompt = build_prompt(profile, journal, [])
+
+    check("prompt states the data is absent rather than omitting it",
+          "No wearable data available." in prompt)
+    check("prompt marks a first briefing", "never requested" in prompt)
+    check("prompt forbids inventing missing facts",
+          "not recorded" in prompt.lower())
+    check("targets and actuals are distinguished in the prompt",
+          "TARGETS" in prompt and "RECORDED FACTS" in prompt)
+
+    seen = build_prompt(profile, journal, [], observation="He is not at the desk.")
+    check("the vision seam injects cleanly", "not at the desk" in seen)
+
+    # The three guarantees the persona is responsible for.
+    check("persona forbids inventing numbers", "NEVER invent a number" in PERSONA)
+    check("persona keeps the attack on output, not the person",
+          "NEVER his body" in PERSONA)
+    check("persona forbids training through pain",
+          "train through pain" in PERSONA)
+    check("persona forbids markdown, since it is spoken",
+          "NO headings" in PERSONA)
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = pathlib.Path(raw)
+        test_profile(tmp)
+        test_journal(tmp)
+        test_health_csv(tmp)
+        test_health_apple(tmp)
+        test_prompt(tmp)
+    print(f"\n  {'all checks passed' if not FAILURES else f'{FAILURES} failed'}")
+    return 1 if FAILURES else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

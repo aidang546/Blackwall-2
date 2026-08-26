@@ -67,7 +67,7 @@ def strip_prefixes(text: str) -> str:
 @dataclass
 class Action:
     name: str
-    kind: str                       # "app" | "system" | "macro"
+    kind: str                       # "app" | "system" | "macro" | "builtin"
     phrases: list[str]
     spec: dict[str, Any] = field(default_factory=dict)
 
@@ -88,6 +88,7 @@ class Match:
 class Registry:
     def __init__(self, config, confirm: set[str] | None = None) -> None:
         self.actions: dict[str, Action] = {}
+        self._builtins: dict[str, Any] = {}
         self.confirm = confirm or set()
         self._load(config)
 
@@ -105,13 +106,36 @@ class Registry:
             self.actions[name] = Action(
                 name, "macro", [normalize(p) for p in spec.get("phrases", [name])], spec
             )
+        for name, spec in (config.get("actions.builtin") or {}).items():
+            self.actions[name] = Action(
+                name, "builtin",
+                [normalize(p) for p in (spec or {}).get("phrases", [name])], spec or {},
+            )
         log.info(
-            "registry loaded: %d actions (%d apps, %d system, %d macros)",
+            "registry loaded: %d actions (%d apps, %d system, %d macros, %d builtin)",
             len(self.actions),
             sum(1 for a in self.actions.values() if a.kind == "app"),
             sum(1 for a in self.actions.values() if a.kind == "system"),
             sum(1 for a in self.actions.values() if a.kind == "macro"),
+            sum(1 for a in self.actions.values() if a.kind == "builtin"),
         )
+
+    def register_builtin(self, name: str, handler) -> None:
+        """Attach the implementation of a builtin action.
+
+        Builtins are declared in config like everything else - so they match by
+        phrase, appear in `erebus actions`, and can be renamed or given extra
+        phrasings without touching code - but their implementation lives in
+        Python rather than in a shell string. The assistant supplies it at
+        startup, which keeps the registry ignorant of what a briefing is.
+        """
+        if name not in self.actions:
+            log.warning(
+                "no config entry for builtin %r - add it under actions.builtin "
+                "to give it phrases", name,
+            )
+            return
+        self._builtins[name] = handler
 
     @property
     def catalog(self) -> list[str]:
@@ -234,7 +258,19 @@ class Registry:
             return await self._run_system(action.name, value)
         if action.kind == "macro":
             return await self._run_macro(action, say)
+        if action.kind == "builtin":
+            return await self._run_builtin(action)
         return ""
+
+    async def _run_builtin(self, action: Action) -> str:
+        handler = self._builtins.get(action.name)
+        if handler is None:
+            return f"{action.label} is not wired up."
+        try:
+            return await handler()
+        except Exception as exc:  # noqa: BLE001
+            log.exception("builtin %s failed", action.name)
+            return f"{action.label} failed: {exc}"
 
     async def _run_shell(self, command: str, label: str) -> str:
         if not command:

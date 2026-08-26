@@ -155,6 +155,36 @@ class Brain:
         value = parsed.get("value")
         return Decision(kind="action", action=action, value=str(value) if value else None)
 
+    # -- one-shot -----------------------------------------------------------
+
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> str:
+        """A single exchange with its own system prompt, outside the conversation.
+
+        The briefing needs its own persona and must not leak into - or be
+        coloured by - ordinary chat history, so it cannot go through
+        `converse`. Nothing here is remembered.
+        """
+        if not self._available:
+            return ""
+        try:
+            return await self._chat(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=self.temperature if temperature is None else temperature,
+                max_tokens=self.max_tokens if max_tokens is None else max_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.error("completion failed: %s", exc)
+            return ""
+
     # -- conversation -------------------------------------------------------
 
     async def converse(self, utterance: str) -> str:
