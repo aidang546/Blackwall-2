@@ -41,26 +41,36 @@ Add `?demo` to the URL to watch it cycle through every state.
 
 ---
 
-## 3. CUDA PyTorch — do this before the voice requirements
-
-Out of order, pip resolves the CPU wheel and Whisper runs about ten times
-slower with no warning that anything is wrong.
-
-```powershell
-pip install torch --index-url https://download.pytorch.org/whl/cu124
-python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
-```
-
-Must print `True` and your card. If it prints `False`, update your NVIDIA
-driver and try again before continuing.
-
----
-
-## 4. Voice pipeline
+## 3. Voice pipeline
 
 ```powershell
 pip install -r requirements-voice.txt
 ```
+
+### GPU acceleration for Whisper
+
+faster-whisper runs on **CTranslate2, not torch**. Installing torch does
+nothing for it — what CTranslate2 needs is cuBLAS and cuDNN 9:
+
+```powershell
+pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+```
+
+You do not have to get this right to proceed. `stt.py` tries CUDA, and on
+failure logs the reason and re-loads on CPU rather than refusing to start. The
+startup log tells you which one you ended up on:
+
+```
+whisper small.en ready on cuda in 2.3s      <- good
+GPU load failed (...); retrying on CPU      <- cuBLAS/cuDNN missing
+```
+
+On CPU, drop to `stt.model: base.en` or `tiny.en` in `config.local.yaml` to
+keep short commands responsive.
+
+---
+
+## 4. Microphone
 
 Check the microphone is visible:
 
@@ -214,11 +224,19 @@ is standing in for "erebus" until you train one — see
 **It never stops listening.** Your noise floor is above the gate. Raise
 `audio.silence_threshold` to 0.02-0.03.
 
-**Whisper is slow.** Check step 3. If `torch.cuda.is_available()` is False you
-are on CPU. If it's True and still slow, drop to `stt.model: base.en`.
+**Whisper is slow.** Look for `retrying on CPU` in the startup log — that means
+cuBLAS/cuDNN are missing (step 3). If it says `ready on cuda` and is still
+slow, drop to `stt.model: base.en`.
 
-**cuDNN errors on startup.** Install the NVIDIA cuDNN runtime, or set
-`stt.device: cpu` — `base.en` on CPU is usable for short commands.
+**cuDNN errors on startup.** `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`,
+or set `stt.device: cpu` and accept CPU speed — `base.en` is usable for short
+commands.
+
+**`AttributeError: _ARRAY_API not found` on startup.** Something loaded
+`tflite-runtime`, which is built for NumPy 1.x. Erebus loads the wake model
+through onnxruntime specifically to avoid this, so if you see it, something
+else in your environment pulled tflite in — `pip uninstall tflite-runtime` is
+safe here, nothing in this project uses it.
 
 **The voice sounds broken.** Set `tts.effects.enabled: false` to hear the dry
 signal. If dry is fine, the chain is over-driven — start by halving `reverb`

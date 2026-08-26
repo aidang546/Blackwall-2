@@ -1,17 +1,52 @@
 # Voice pipeline. Install AFTER requirements.txt.
 #
-# NVIDIA users: install the CUDA build of torch FIRST, otherwise pip pulls the
-# CPU wheel and faster-whisper silently runs 10x slower:
-#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+# Versions are lower bounds, not pins, and the floors are deliberate - these are
+# the versions the code is written against and has been run against:
+#
+#   piper-tts >= 1.7   The synthesis API changed. Earlier releases take a wave
+#                      file and a length_scale kwarg; 1.7 takes a
+#                      SynthesisConfig and yields AudioChunks. Pinning lower
+#                      breaks erebus/pipeline/tts.py.
+#   numpy >= 2         Everything here is built for it. See the openwakeword
+#                      note below, which is the one place that bites.
 
-sounddevice==0.5.1          # mic capture (PortAudio)
-numpy==2.2.1
-faster-whisper==1.1.1       # CTranslate2 Whisper - the STT engine
-openwakeword==0.6.0         # always-on wake word detection
-piper-tts==1.2.0            # local neural TTS
-scipy==1.15.0               # audio effects (filters/reverb for the Blackwall voice)
+sounddevice>=0.5.1          # mic capture (PortAudio)
+numpy>=2.0
+scipy>=1.15                 # the voice effects chain (filters, reverb)
+piper-tts>=1.7              # local neural TTS
+faster-whisper>=1.1         # CTranslate2 Whisper - the STT engine
+openwakeword>=0.6           # always-on wake word detection
+onnxruntime>=1.20           # inference for both Piper and the wake model
+
+# ---------------------------------------------------------------------------
+# openWakeWord and NumPy 2
+#
+# openwakeword installs `tflite-runtime` and defaults to it. That wheel is
+# compiled against NumPy 1.x and dies under NumPy 2 with a bare
+# "AttributeError: _ARRAY_API not found" that names neither package.
+#
+# erebus/pipeline/wake.py therefore loads with inference_framework="onnx",
+# which uses onnxruntime (already needed by Piper) and sidesteps tflite
+# entirely. Nothing further is required - the tflite wheel just sits unused.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# GPU acceleration for Whisper
+#
+# faster-whisper runs on CTranslate2, NOT torch - installing torch does nothing
+# for it. What CTranslate2 needs on an NVIDIA card is cuBLAS and cuDNN 9:
+#
+#   pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+#
+# If those are missing, stt.py logs the CUDA failure and falls back to CPU
+# rather than refusing to start, so a broken GPU setup costs latency, not the
+# assistant. Check which one you got in the startup log:
+#
+#   whisper small.en ready on cuda in 2.3s     <- good
+#   GPU load failed (...); retrying on CPU     <- cuBLAS/cuDNN missing
+# ---------------------------------------------------------------------------
 
 # Windows system control
-pycaw==20240210 ; sys_platform == "win32"
-comtypes==1.4.8 ; sys_platform == "win32"
-psutil==6.1.1
+pycaw>=20240210 ; sys_platform == "win32"
+comtypes>=1.4 ; sys_platform == "win32"
+psutil>=6.1

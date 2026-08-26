@@ -5,6 +5,10 @@ a few others. "Erebus" is not among them, so out of the box the config uses
 `hey_jarvis` as a stand-in: the pipeline works end to end, but you are saying
 the wrong word at it.
 
+Those pretrained models are a separate ~10 MB download. Erebus fetches them
+automatically the first time it loads a wake model, so there is nothing to do
+for the stand-in to work.
+
 Training a real one takes about fifteen minutes, and none of it is manual
 recording — the training set is synthetic.
 
@@ -39,6 +43,32 @@ wake:
   model: models/erebus.onnx
   threshold: 0.55
 ```
+
+Export the **ONNX** model, not the tflite one. Erebus loads openWakeWord with
+`inference_framework="onnx"` on purpose: the `tflite-runtime` wheel is compiled
+against NumPy 1.x and fails under NumPy 2 with a bare `AttributeError:
+_ARRAY_API not found` that names neither package. onnxruntime is already
+required by Piper, so nothing extra is needed.
+
+Verify it before trusting it — `tests/test_wake.py` speaks the wake word and a
+set of ordinary commands at the detector and reports the scores. Point it at
+your model by editing `WAKE_MODEL` and `WAKE_PHRASE` at the top:
+
+```
+python tests/test_wake.py
+```
+
+```
+  ok    'Hey Jarvis' fires  peak=0.997
+  ok    'Gaming mode' does not fire  peak=0.000
+  ok    separation is wide enough to be safe  0.000 .. 0.997
+```
+
+What you want is that separation. The stock model scores 0.997 on its phrase
+and a flat 0.000 on everything else, which is why a 0.55 threshold is safe. If
+your trained model puts the negatives up around 0.3-0.4, the margin is thin and
+it will false-trigger in conversation — retrain with more negative examples
+rather than papering over it with a higher threshold.
 
 ---
 

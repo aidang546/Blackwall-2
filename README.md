@@ -40,10 +40,10 @@ python -m venv .venv
 pip install -r requirements.txt
 python -m erebus --no-voice
 
-# 2. The voice pipeline. NVIDIA users: CUDA torch first, or you get the
-#    CPU wheel and everything runs ten times slower.
-pip install torch --index-url https://download.pytorch.org/whl/cu124
+# 2. The voice pipeline, and a voice to speak with.
 pip install -r requirements-voice.txt
+pip install nvidia-cublas-cu12 nvidia-cudnn-cu12   # GPU Whisper; see note below
+python -m erebus fetch-voice en_GB-alan-medium
 
 # 3. The brain.
 winget install Ollama.Ollama
@@ -51,6 +51,11 @@ ollama pull llama3.1:8b
 
 python -m erebus
 ```
+
+Whisper here runs on CTranslate2, **not torch** — installing torch does nothing
+for it. What it wants on an NVIDIA card is cuBLAS and cuDNN. Without them it
+logs the CUDA failure and falls back to CPU rather than refusing to start, so
+check the startup line to see which you got.
 
 Full step-by-step, including voice downloads and autostart:
 **[docs/SETUP.md](docs/SETUP.md)**.
@@ -243,11 +248,19 @@ while you fix the phrasing.
 ```
 python tests/test_routing.py         # the matcher, against real phrasings
 python tests/test_e2e.py             # boots the daemon, drives it over the websocket
+python tests/test_brain.py           # the LLM layer, against a scripted Ollama
 python tests/test_voice_roundtrip.py # speaks commands, transcribes them, routes them
+python tests/test_wake.py            # speaks the wake word at the detector
 ```
 
-The first two need no GPU, model, or microphone. The third needs the voice
-extras and one Piper voice, and skips cleanly without them.
+The first three need no GPU, model, or microphone. The last two need the voice
+extras and one Piper voice, and skip cleanly without them.
+
+`test_brain.py` is the one that guards the security claim: it feeds the router
+a hallucinated action name and a shell command dressed up as one, and asserts
+both are refused. It also covers the shapes a real model actually produces —
+JSON buried in prose, truncated JSON, an empty reply — plus a dead server, a
+500, and a model that was never pulled.
 
 ---
 

@@ -14,6 +14,8 @@ import collections
 import logging
 import time
 
+from .audio import FRAME_MS
+
 log = logging.getLogger("erebus.wake")
 
 try:  # pragma: no cover - optional heavy dep
@@ -46,7 +48,9 @@ class WakeDetector:
         self.model_name = model
         self._last_fire = 0.0
         self._model = None
-        frames_per_second = sample_rate / (sample_rate * 0.08)
+        # Frames arrive every FRAME_MS; keep enough of them to cover the
+        # preroll window.
+        frames_per_second = 1000.0 / FRAME_MS
         self._preroll: collections.deque = collections.deque(
             maxlen=max(1, int(preroll_seconds * frames_per_second))
         )
@@ -58,13 +62,42 @@ class WakeDetector:
                 "use push-to-talk from the UI"
             )
             return False
-        try:
-            self._model = _OWWModel(wakeword_models=[self.model_name])
-        except Exception as exc:  # noqa: BLE001 - surface any load failure clearly
-            log.error("could not load wake model %r: %s", self.model_name, exc)
+        if not self._open(retry=True):
             return False
         log.info("wake model loaded: %s (threshold %.2f)", self.model_name, self.threshold)
         return True
+
+    def _open(self, retry: bool) -> bool:
+        try:
+            # ONNX, not the default tflite. `tflite_runtime` is built against
+            # NumPy 1.x and dies with "_ARRAY_API not found" under NumPy 2,
+            # which everything else here requires. onnxruntime is already a
+            # Piper dependency, so this costs nothing and is the better
+            # maintained path anyway.
+            self._model = _OWWModel(
+                wakeword_models=[self.model_name], inference_framework="onnx"
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - surface any load failure clearly
+            # The pretrained models are a separate ~10 MB download that nothing
+            # else triggers, so a first run always lands here. Fetch them once
+            # and retry rather than making the user find the incantation.
+            if retry and self._download_models():
+                return self._open(retry=False)
+            log.error("could not load wake model %r: %s", self.model_name, exc)
+            return False
+
+    @staticmethod
+    def _download_models() -> bool:
+        try:
+            import openwakeword.utils
+
+            log.info("downloading openWakeWord models (one time, ~10 MB)")
+            openwakeword.utils.download_models()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.error("could not download wake models: %s", exc)
+            return False
 
     @property
     def ready(self) -> bool:
