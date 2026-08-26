@@ -92,6 +92,45 @@ async def test_chunker() -> None:
     check("whitespace-only input yields nothing", await collect("   \n  ") == [])
 
 
+async def test_presets() -> None:
+    """Every preset must produce finite, un-clipped audio.
+
+    A preset is a bag of keys read by name; a typo produces silence or a burst
+    of noise rather than an error, so each one is actually run.
+    """
+    print("\nVOICE PRESETS")
+    from erebus.pipeline import voicefx
+
+    if not voicefx.FX_AVAILABLE:
+        print("  skipped - numpy/scipy not installed")
+        return
+
+    import numpy as np
+
+    sample_rate = 22050
+    speech = (np.sin(np.linspace(0, 400 * np.pi, sample_rate * 2)) * 0.3
+              ).astype(np.float32)
+
+    for name, preset in voicefx.PRESETS.items():
+        settings = dict(preset)
+        settings["enabled"] = True
+        out = voicefx.process(speech, sample_rate, settings)
+        check(f"{name}: finite and bounded",
+              np.isfinite(out).all() and 0.05 < np.abs(out).max() <= 1.0,
+              f"peak {np.abs(out).max():.2f}")
+        check(f"{name}: length preserved", len(out) == len(speech))
+
+    # A preset name plus an override must merge, not replace.
+    merged = voicefx.resolve({"preset": "blackwall", "reverb": 0.9})
+    check("an explicit key overrides the preset", merged["reverb"] == 0.9)
+    check("and the rest of the preset survives",
+          merged.get("detune_voices") == 3)
+    check("an unknown preset degrades rather than raising",
+          voicefx.resolve({"preset": "nonsense", "reverb": 0.1})["reverb"] == 0.1)
+    check("no preset passes settings through untouched",
+          voicefx.resolve({"reverb": 0.5}) == {"reverb": 0.5})
+
+
 async def test_barge_in() -> None:
     print("\nBARGE-IN")
 
@@ -179,6 +218,7 @@ async def test_speak_stream_contract() -> None:
 
 async def main() -> int:
     await test_chunker()
+    await test_presets()
     await test_barge_in()
     await test_speak_stream_contract()
     print(f"\n  {'all checks passed' if not FAILURES else f'{FAILURES} failed'}")

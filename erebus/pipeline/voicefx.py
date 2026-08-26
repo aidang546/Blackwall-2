@@ -182,6 +182,134 @@ def bitcrush(x, bits: int):
     return (np.round(x * levels) / levels).astype(np.float32)
 
 
+def ring_mod(x, freq: float, mix: float, sample_rate: int):
+    """Multiply by a sine carrier.
+
+    The oldest robot-voice trick and still the most effective, because it does
+    something no human throat can: it creates sum and difference frequencies
+    that are not harmonically related to the original. That inharmonicity is
+    what the ear reads as "not alive". Low carriers (30-80 Hz) buzz; higher
+    ones (200 Hz+) destroy intelligibility, so keep the mix well under 1.
+    """
+    if mix <= 0.001 or freq <= 0:
+        return x
+    t = np.arange(len(x), dtype=np.float32) / sample_rate
+    carrier = np.sin(2 * np.pi * freq * t).astype(np.float32)
+    return ((1.0 - mix) * x + mix * x * carrier).astype(np.float32)
+
+
+def detune_layers(x, voices: int, cents: float, spread_ms: float,
+                  sample_rate: int):
+    """Stack slightly detuned, slightly delayed copies of the voice.
+
+    This is the effect people actually mean by "sounds like an AI": several
+    near-identical voices speaking as one, never quite in unison. A single
+    speaker cannot produce it, and no amount of acting approximates it.
+
+    Small numbers matter here - 8 to 20 cents and 10 to 30 ms. Push either
+    further and it stops being one entity and becomes a crowd.
+    """
+    if voices < 2 or cents <= 0:
+        return x
+
+    layers = [x]
+    for index in range(1, voices):
+        # Alternate sharp and flat so the stack stays centred on the original.
+        direction = 1 if index % 2 else -1
+        offset = direction * cents * (1 + index // 2) / 100.0
+        layer = pitch_shift(x, offset)
+
+        delay = int(sample_rate * (spread_ms / 1000.0) * index)
+        if delay:
+            layer = np.concatenate([np.zeros(delay, dtype=np.float32), layer])[: len(x)]
+        if len(layer) < len(x):
+            layer = np.pad(layer, (0, len(x) - len(layer)))
+        layers.append(layer[: len(x)])
+
+    stacked = np.sum(layers, axis=0) / len(layers)
+    return stacked.astype(np.float32)
+
+
+def sub_octave(x, mix: float):
+    """Mix an octave-down copy underneath.
+
+    Adds weight the source never had. Used sparingly it reads as size; used
+    heavily it reads as a different creature entirely.
+    """
+    if mix <= 0.001:
+        return x
+    return ((1.0 - mix) * x + mix * pitch_shift(x, -12.0)).astype(np.float32)
+
+
+def comb_resonance(x, freq: float, feedback: float, sample_rate: int):
+    """A short tuned delay, giving a metallic resonant character.
+
+    Distinct from the reverb: that simulates a room, this simulates the voice
+    coming out of something with a resonant cavity - a vent, a machine, a
+    speaker grille.
+    """
+    if feedback <= 0.001 or freq <= 0:
+        return x
+    delay = max(1, int(sample_rate / freq))
+    y = x.astype(np.float32).copy()
+    for start in range(delay, len(y), delay):
+        stop = min(start + delay, len(y))
+        y[start:stop] += feedback * y[start - delay : stop - delay]
+    peak = float(np.abs(y).max())
+    return (y / peak * float(np.abs(x).max())).astype(np.float32) if peak else y
+
+
+#: Ready-made characters. `preset:` in config picks one; anything set
+#: alongside it overrides that key. These exist because the interesting
+#: settings interact - detune plus ring mod plus sub is a different creature
+#: from any of them alone, and finding that by twiddling one slider at a time
+#: takes an evening.
+PRESETS = {
+    # The current default: a processed human. Cold, but plainly a person.
+    "transmitted": dict(
+        pitch_shift=-2.5, formant=0.94, bandpass=[180, 6200],
+        reverb=0.22, static=0.035, bitcrush=0,
+    ),
+    # Several voices as one, slightly detuned, with weight underneath and a
+    # metallic edge. This is the one that sounds like something behind a wall.
+    "blackwall": dict(
+        pitch_shift=-3.0, formant=0.90, bandpass=[140, 6800],
+        detune_voices=3, detune_cents=11, detune_spread_ms=18,
+        sub_octave=0.22, ring_freq=42, ring_mix=0.13,
+        comb_freq=180, comb_feedback=0.18,
+        reverb=0.30, static=0.045, bitcrush=0,
+    ),
+    # Classic machine: heavy ring modulation, quantised, band-limited hard.
+    "machine": dict(
+        pitch_shift=-1.5, formant=0.97, bandpass=[300, 4200],
+        ring_freq=95, ring_mix=0.42, bitcrush=9,
+        comb_freq=240, comb_feedback=0.25,
+        reverb=0.12, static=0.06,
+    ),
+    # Barely processed, for when the persona is doing the work.
+    "clean": dict(
+        pitch_shift=-1.0, formant=0.98, bandpass=[120, 7600],
+        reverb=0.10, static=0.01, bitcrush=0,
+    ),
+}
+
+
+def resolve(settings: dict) -> dict:
+    """Expand a preset, letting explicit keys override it."""
+    name = settings.get("preset")
+    if not name:
+        return settings
+    base = PRESETS.get(name)
+    if base is None:
+        log.warning("unknown tts preset %r - using settings as given", name)
+        return settings
+    merged = dict(base)
+    for key, value in settings.items():
+        if key != "preset":
+            merged[key] = value
+    return merged
+
+
 def process(audio, sample_rate: int, settings: dict):
     """Run the full chain. Returns float32 in [-1, 1].
 
@@ -191,13 +319,34 @@ def process(audio, sample_rate: int, settings: dict):
     if not FX_AVAILABLE or not settings.get("enabled", True):
         return audio
 
+    settings = resolve(settings)
+
     x = np.asarray(audio, dtype=np.float32)
     if x.size == 0:
         return x
 
     try:
+        # Order matters. Pitch and formant reshape the speaker; layering then
+        # multiplies that speaker; ring modulation and comb act on the stack;
+        # band-limiting is the channel; space and noise are the room. Ring
+        # modulating before layering would give three differently-detuned
+        # carriers, which sounds like a fault rather than a character.
         x = pitch_shift(x, float(settings.get("pitch_shift", 0.0)))
         x = formant_shift(x, float(settings.get("formant", 1.0)), sample_rate)
+
+        x = detune_layers(
+            x,
+            int(settings.get("detune_voices", 1) or 1),
+            float(settings.get("detune_cents", 0.0) or 0.0),
+            float(settings.get("detune_spread_ms", 0.0) or 0.0),
+            sample_rate,
+        )
+        x = sub_octave(x, float(settings.get("sub_octave", 0.0) or 0.0))
+        x = ring_mod(x, float(settings.get("ring_freq", 0.0) or 0.0),
+                     float(settings.get("ring_mix", 0.0) or 0.0), sample_rate)
+        x = comb_resonance(x, float(settings.get("comb_freq", 0.0) or 0.0),
+                           float(settings.get("comb_feedback", 0.0) or 0.0),
+                           sample_rate)
 
         band = settings.get("bandpass") or [None, None]
         if band[0] and band[1]:

@@ -73,15 +73,39 @@ tts:
   # Low, flat voices suit the persona. `python -m erebus voices` lists installed.
   voice: en_GB-alan-medium
   rate: 1.0
-  # The "behind the wall" processing chain.
+  # The processing chain. This carries more of the character than the voice
+  # model does - game AI voices are mostly processing applied to an ordinary
+  # human take, not a special performance.
+  #
+  # Pick a preset, or set keys directly. Anything you set alongside a preset
+  # overrides that one key, so `preset: blackwall` plus `reverb: 0.4` works.
+  #
+  #   clean        barely processed; the persona does the work
+  #   transmitted  a processed human. Cold, but plainly a person.
+  #   blackwall    several detuned voices as one, weight underneath, metallic
+  #                edge. The one that stops sounding like a single speaker.
+  #   machine      heavy ring modulation and quantisation. Classic robot.
   effects:
     enabled: true
-    pitch_shift: -2.5     # semitones. Negative = deeper.
-    formant: 0.94         # <1 makes it larger/inhuman
-    bandpass: [180, 6200] # Hz - trims the ends, gives it a transmitted quality
-    reverb: 0.22          # 0..1 wet mix, small dark room
-    static: 0.035         # broadband noise floor bed
-    bitcrush: 0           # 0 = off. Try 10-12 bits for a harsher machine read.
+    preset: transmitted
+
+    # --- or set it all by hand -------------------------------------------
+    # pitch_shift: -2.5       # semitones. Negative = deeper.
+    # formant: 0.94           # <1 makes the speaker sound physically larger
+    # bandpass: [180, 6200]   # Hz - trims both ends, a transmitted quality
+    # reverb: 0.22            # 0..1 wet, small dark room
+    # static: 0.035           # broadband noise floor bed
+    # bitcrush: 0             # 0 = off. 9-12 bits for a harsher read.
+    #
+    # The inhuman ones:
+    # detune_voices: 3        # copies of the voice, slightly apart
+    # detune_cents: 11        # how far apart. 8-20 is the useful range.
+    # detune_spread_ms: 18    # and how far behind each other
+    # sub_octave: 0.22        # octave-down layer mixed under, for size
+    # ring_freq: 42           # sine carrier, Hz. 30-80 buzzes, 200+ destroys
+    # ring_mix: 0.13          #   intelligibility. Keep the mix low.
+    # comb_freq: 180          # tuned delay - a resonant cavity, not a room
+    # comb_feedback: 0.18
 
 server:
   host: 127.0.0.1         # set to 0.0.0.0 to allow phone access over LAN

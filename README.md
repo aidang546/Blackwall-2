@@ -245,14 +245,38 @@ __wall.ping();          // the travelling pulse that fires on an action
 `brain.persona` is the system prompt — cold, terse, no filler. Rewrite it to
 taste.
 
-`tts.effects` is the voice chain: pitch down, formant shift, band-limiting,
-a small dark room, and a thin static bed. Test changes without a full run:
+`tts.effects` carries more of the character than the voice model does. Game AI
+voices are mostly processing applied to an ordinary human take — the inhuman
+quality comes from detuned layering, ring modulation and resonance, not from a
+special performance. Four presets:
+
+| preset | what it is |
+|---|---|
+| `clean` | barely processed; the persona does the work |
+| `transmitted` | a processed human. Cold, but plainly a person. **Default.** |
+| `blackwall` | several detuned voices as one, weight underneath, metallic edge |
+| `machine` | heavy ring modulation and quantisation. Classic robot. |
+
+```yaml
+tts:
+  effects:
+    preset: blackwall
+    reverb: 0.4        # any key set alongside a preset overrides just that key
+```
+
+`blackwall` is the one that stops sounding like a single speaker: three copies
+of the voice 11 cents apart and 18ms behind each other, an octave-down layer
+for weight, and a 42Hz ring modulator for the metallic edge. No human throat
+produces that, which is exactly why it reads as not-alive.
+
+Audition without a full run:
 
 ```
 python -m erebus say "The wall holds."
+python -m erebus say "The wall holds." --out wall.wav
 ```
 
-Set `tts.effects.enabled: false` for a clean read.
+Set `tts.effects.enabled: false` for an unprocessed read.
 
 ---
 
