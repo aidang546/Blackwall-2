@@ -28,13 +28,80 @@ Two things to know:
 
 | | when to use it |
 |---|---|
-| **`source: push`** | your device has no cloud API — the phone POSTs to Erebus |
+| **`source: push`** | the phone POSTs to Erebus. **Best route for iPhone and for Nothing/CMF.** |
 | **`source: csv`** | you export a CSV periodically (Whoop, Garmin, Oura, Fitbit) |
-| **`source: apple`** | Apple Watch / iPhone Health `export.xml` |
+| **`source: apple`** | a one-off Apple Health `export.xml` dump |
 
 ---
 
-## Push — for devices with no API
+## iPhone / Apple Watch
+
+Apple Health has no cloud API, and its built-in export is a manual dump of a
+several-hundred-megabyte XML file. That is fine once — `source: apple` reads it
+— but useless as a daily feed.
+
+The working route is an iOS app that reads HealthKit and POSTs on a schedule.
+**[Health Auto Export][hae-app]** does exactly this: it has a REST API
+automation that sends JSON to any URL with configurable headers, which is
+precisely what `/api/health` accepts. The REST feature is a paid tier.
+
+### Setup
+
+On the PC:
+
+```yaml
+# config.local.yaml
+server:
+  host: 0.0.0.0
+briefing:
+  health:
+    source: push
+```
+
+`python -m erebus pair` prints your token.
+
+In Health Auto Export → Automations → new automation:
+
+| | |
+|---|---|
+| Type | REST API |
+| URL | `http://192.168.1.20:8848/api/health` — your PC's LAN address |
+| Format | JSON |
+| Header | `X-Erebus-Token: <your token>` |
+| Schedule | daily, or hourly if you want the briefing current |
+| Metrics | resting heart rate, HRV, sleep analysis, step count, active energy, body mass, exercise time, workouts |
+
+Only those metrics are read. The app exports 150+ and the rest are ignored —
+select fewer and the payload stays small.
+
+### What Erebus does with it
+
+Its payload is **metric-major** (a list of metrics, each with samples) rather
+than one record per day, and several metrics have their own shape — sleep uses
+`totalSleep`, heart rate uses `Min`/`Avg`/`Max`. So it gets its own adapter
+rather than the generic alias path:
+
+- Metrics are inverted into one record per day.
+- Steps and calories are **summed** across a day; resting heart rate and HRV
+  take the reading, because adding two resting heart rates together would be
+  nonsense.
+- Sleep is read from `totalSleep`, converted from minutes when the `units`
+  field says so.
+- Workouts attach to the day they started.
+- 20+ minutes of Apple exercise time counts as a session when no workout was
+  logged; a few incidental minutes do not.
+
+### Does your Nothing watch reach Apple Health?
+
+Only if the CMF app writes to HealthKit. Health Connect syncing is
+Android-only, so on iOS the watch data may stop at the CMF app. Check whether
+Health → Sharing → Apps lists it. If it does not, your iPhone still supplies
+steps and workouts on its own, and the watch's sleep and HRV would need the
+Android route instead.
+
+---
+
+## Push — the endpoint itself
 
 Nothing's CMF watches, and anything else that only reaches **Android Health
 Connect**, have no public cloud API to pull from. So the phone pushes instead,
@@ -88,7 +155,7 @@ Only `date` is required. Re-sending a day is expected: a later push overwrites
 field by field, so a morning push followed by an evening one carrying the
 workout merges correctly rather than duplicating the day.
 
-### Getting Health Connect to send it
+### Getting Android Health Connect to send it
 
 Three options, easiest first:
 
@@ -134,7 +201,10 @@ briefing:
 
 ---
 
-## Apple Health
+## Apple Health — the one-off dump
+
+For backfilling history, not for daily use. Health app → your photo → Export
+All Health Data.
 
 ```yaml
 briefing:
@@ -143,8 +213,8 @@ briefing:
     path: "C:/.../apple_health_export/export.xml"
 ```
 
-Health app → your photo → Export All Health Data. The file is routinely
-hundreds of megabytes, so it is streamed rather than loaded.
+The file is routinely hundreds of megabytes, so it is streamed rather than
+loaded. For an ongoing feed use the push route above instead.
 
 ---
 
@@ -166,5 +236,7 @@ alone is noise. When it fires, the briefing lowers the training demand rather
 than raising it. Erebus is instructed never to counsel training through pain,
 skipping rest, or eating less.
 
+[hae-app]: https://apps.apple.com/app/health-auto-export-json-csv/id1115567069
+[hae-docs]: https://github.com/Lybron/health-auto-export/wiki/API-Export---JSON-Format
 [thc]: https://github.com/RafhaanShah/TaskerHealthConnect
 [hce]: https://github.com/angeloanan/HealthConnectExports

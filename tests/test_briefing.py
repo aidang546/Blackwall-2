@@ -277,6 +277,94 @@ def test_health_push(tmp: pathlib.Path) -> None:
           health_mod.PushedHealthSource(tmp / "nothing.jsonl").snapshots() == [])
 
 
+def test_health_apple_push(tmp: pathlib.Path) -> None:
+    """Health Auto Export's payload, in the shape its docs specify.
+
+    Metric-major rather than day-major, with several metrics carrying their own
+    field names, so it cannot go through the generic alias path.
+    """
+    print("\nHEALTH (Health Auto Export / iOS)")
+    payload = {"data": {
+        "metrics": [
+            {"name": "resting_heart_rate", "units": "count/min", "data": [
+                {"qty": 57, "date": "2026-08-25 08:00:00 +0000"},
+                {"qty": 61, "date": "2026-08-26 08:00:00 +0000"}]},
+            {"name": "heart_rate_variability", "units": "ms", "data": [
+                {"qty": 52.4, "date": "2026-08-25 08:00:00 +0000"}]},
+            {"name": "sleep_analysis", "units": "hr", "data": [
+                {"totalSleep": 6.4, "deep": 1.1,
+                 "date": "2026-08-25 06:30:00 +0000"}]},
+            {"name": "step_count", "units": "count", "data": [
+                {"qty": 4200, "date": "2026-08-26 12:00:00 +0000"},
+                {"qty": 5100, "date": "2026-08-26 20:00:00 +0000"}]},
+            {"name": "heart_rate", "units": "count/min", "data": [
+                {"Min": 52, "Avg": 74, "Max": 161,
+                 "date": "2026-08-26 12:00:00 +0000"}]},
+            {"name": "vo2_max", "units": "ml/kg/min", "data": [
+                {"qty": 44.1, "date": "2026-08-26 08:00:00 +0000"}]},
+        ],
+        "workouts": [
+            {"id": "abc", "name": "Traditional Strength Training",
+             "start": "2026-08-25 17:00:00 +0000", "duration": 3900},
+        ],
+    }}
+
+    check("the shape is recognised", health_mod.looks_like_hae(payload))
+    records = health_mod.normalise_pushed(payload)
+    check("flattens to one record per day", len(records) == 2, f"{len(records)}")
+
+    first, second = records
+    check("metric-major is inverted to day-major",
+          first["date"] == "2026-08-25" and first["resting_hr"] == 57)
+    check("sleep is read from totalSleep", first["sleep_hours"] == 6.4)
+    check("workouts land on the right day",
+          first["workouts"] == ["Traditional Strength Training"]
+          and "workouts" not in second)
+    check("same-day samples are summed where that is correct",
+          second["steps"] == 9300, f"steps={second.get('steps')}")
+    check("readings are NOT summed where that would be wrong",
+          second["resting_hr"] == 61, f"rhr={second.get('resting_hr')}")
+    check("unmapped metrics are ignored",
+          "vo2_max" not in second and "heart_rate" not in second)
+
+    # Sleep in minutes, which the app emits depending on its settings.
+    minutes = health_mod.normalise_pushed({"data": {"metrics": [
+        {"name": "sleep_analysis", "units": "min", "data": [
+            {"totalSleep": 384, "date": "2026-08-26 06:30:00 +0000"}]}]}})
+    check("sleep in minutes is converted using the units field",
+          abs(minutes[0]["sleep_hours"] - 6.4) < 0.01,
+          f"{minutes[0]['sleep_hours']:.2f}h from 384min")
+
+    # Exercise minutes are evidence of training when no workout was logged.
+    exercise = health_mod.normalise_pushed({"data": {"metrics": [
+        {"name": "apple_exercise_time", "units": "min", "data": [
+            {"qty": 45, "date": "2026-08-26 18:00:00 +0000"}]}]}})
+    check("exercise time counts as a session when nothing else does",
+          exercise[0].get("workouts") == ["exercise"])
+    check("the helper field does not leak into the record",
+          "exercise_minutes" not in exercise[0])
+
+    brief_sleep = health_mod.normalise_pushed({"data": {"metrics": [
+        {"name": "apple_exercise_time", "units": "min", "data": [
+            {"qty": 4, "date": "2026-08-26 18:00:00 +0000"}]}]}})
+    check("a few incidental minutes do not count as a session",
+          not brief_sleep[0].get("workouts"))
+
+    check("an empty export is not an error",
+          health_mod.normalise_pushed({"data": {"metrics": []}}) == [])
+    check("undated samples are dropped, not guessed at",
+          health_mod.normalise_pushed({"data": {"metrics": [
+              {"name": "step_count", "data": [{"qty": 100}]}]}}) == [])
+
+    # Round trip through the store, as the endpoint would.
+    store = tmp / "hae.jsonl"
+    health_mod.store_pushed(records, store)
+    snaps = health_mod.PushedHealthSource(store).snapshots(3650)
+    check("stored and read back", len(snaps) == 2)
+    check("the workout day is a training day", snaps[0].trained)
+    check("the untrained day is not", not snaps[1].trained)
+
+
 def test_prompt(tmp: pathlib.Path) -> None:
     print("\nPROMPT & PERSONA")
     profile = Profile.load(write_yaml(tmp, """
@@ -319,6 +407,7 @@ def main() -> int:
         test_health_csv(tmp)
         test_health_apple(tmp)
         test_health_push(tmp)
+        test_health_apple_push(tmp)
         test_prompt(tmp)
     print(f"\n  {'all checks passed' if not FAILURES else f'{FAILURES} failed'}")
     return 1 if FAILURES else 0

@@ -358,6 +358,127 @@ def _canonical(key: str) -> str | None:
     return ALIASES.get(flat)
 
 
+# ---------------------------------------------------------------------------
+#  Health Auto Export (iOS)
+#
+#  Apple Health has no cloud API, and its built-in export is a manual dump of a
+#  several-hundred-megabyte XML file - fine once, useless as a daily feed. The
+#  practical route is an iOS app that reads HealthKit and POSTs on a schedule.
+#
+#  Its payload is metric-major rather than day-major, and several metrics have
+#  their own shape, so it cannot go through the generic alias path. This
+#  flattens it into the same day records everything else produces.
+# ---------------------------------------------------------------------------
+
+#: Health Auto Export metric name -> canonical field. Names not listed are
+#: ignored; the app exports 150+ metrics and almost none of them belong in a
+#: briefing.
+HAE_METRICS = {
+    "resting_heart_rate": "resting_hr",
+    "heart_rate_variability": "hrv",
+    "sleep_analysis": "sleep_hours",
+    "step_count": "steps",
+    "active_energy": "calories",
+    "weight_body_mass": "weight_kg",
+    "apple_exercise_time": "exercise_minutes",
+}
+
+#: Fields that accumulate over a day. Everything else takes the latest reading -
+#: two resting heart rates on one day should not be added together.
+HAE_SUMMED = {"steps", "calories", "sleep_hours", "exercise_minutes"}
+
+
+def _hae_date(text: str) -> str | None:
+    """Health Auto Export stamps are 'yyyy-MM-dd HH:mm:ss Z'. We want the day."""
+    if not text:
+        return None
+    day = str(text)[:10]
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return day
+
+
+def _hae_value(sample: dict, field_name: str) -> float | None:
+    """Pull the number out of one sample, allowing for the per-metric shapes."""
+    if field_name == "sleep_hours":
+        # Aggregated sleep reports totalSleep; asleep is the fallback when the
+        # app is configured for unaggregated output.
+        for key in ("totalSleep", "asleep"):
+            value = _to_float(sample.get(key))
+            if value is not None:
+                return value
+        return None
+    if "qty" in sample:
+        return _to_float(sample["qty"])
+    # Heart-rate style samples carry Min/Avg/Max instead of qty.
+    for key in ("Avg", "avg"):
+        if key in sample:
+            return _to_float(sample[key])
+    return None
+
+
+def looks_like_hae(payload: Any) -> bool:
+    return (
+        isinstance(payload, dict)
+        and isinstance(payload.get("data"), dict)
+        and ("metrics" in payload["data"] or "workouts" in payload["data"])
+    )
+
+
+def flatten_hae(payload: dict) -> list[dict]:
+    """Metric-major Health Auto Export JSON -> one record per day."""
+    data = payload.get("data") or {}
+    by_day: dict[str, dict] = {}
+
+    for metric in data.get("metrics") or []:
+        if not isinstance(metric, dict):
+            continue
+        field_name = HAE_METRICS.get(str(metric.get("name", "")).lower())
+        if field_name is None:
+            continue
+        units = str(metric.get("units", "")).lower()
+        for sample in metric.get("data") or []:
+            if not isinstance(sample, dict):
+                continue
+            day = _hae_date(sample.get("date") or sample.get("sleepEnd")
+                            or sample.get("startDate", ""))
+            value = _hae_value(sample, field_name)
+            if day is None or value is None:
+                continue
+            # Sleep is reported in hours or minutes depending on the app's
+            # settings; the units string says which.
+            if field_name == "sleep_hours" and units.startswith("min"):
+                value /= 60.0
+            record = by_day.setdefault(day, {"date": day})
+            if field_name in HAE_SUMMED:
+                record[field_name] = record.get(field_name, 0.0) + value
+            else:
+                record[field_name] = value
+
+    for workout in data.get("workouts") or []:
+        if not isinstance(workout, dict):
+            continue
+        day = _hae_date(workout.get("start") or workout.get("date", ""))
+        name = str(workout.get("name") or "").strip()
+        if not day or not name:
+            continue
+        record = by_day.setdefault(day, {"date": day})
+        record.setdefault("workouts", [])
+        if name not in record["workouts"]:
+            record["workouts"].append(name)
+
+    # exercise_minutes is not a HealthSnapshot field; it is only useful as
+    # evidence that a day was trained, so fold it in and drop it.
+    for record in by_day.values():
+        minutes = record.pop("exercise_minutes", None)
+        if minutes and minutes >= 20 and not record.get("workouts"):
+            record.setdefault("workouts", []).append("exercise")
+
+    return [by_day[d] for d in sorted(by_day)]
+
+
 def normalise_pushed(payload: Any) -> list[dict]:
     """Turn whatever arrived into a list of canonical day records.
 
@@ -365,6 +486,11 @@ def normalise_pushed(payload: Any) -> list[dict]:
     common wrapper keys. Unknown fields are dropped rather than rejected - a
     sender that includes its own metadata should not fail the whole upload.
     """
+    # Health Auto Export is metric-major and needs its own flattening before
+    # the generic alias path can do anything with it.
+    if looks_like_hae(payload):
+        return flatten_hae(payload)
+
     if isinstance(payload, dict):
         for wrapper in ("days", "data", "records", "entries", "results", "items"):
             if isinstance(payload.get(wrapper), list):
