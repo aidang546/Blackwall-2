@@ -92,6 +92,13 @@ server:
   # Refuse connections from outside these ranges even when bound to 0.0.0.0.
   allow_networks: ["127.0.0.0/8", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"]
 
+  # Failed authentication attempts are rate limited per address, so the token
+  # is not a password with unlimited guesses from anywhere on the network.
+  lockout:
+    max_attempts: 5
+    window: 300       # seconds over which failures accumulate
+    penalty: 900      # how long a locked-out address stays out
+
 ui:
   # Visual tuning for the Blackwall.
   hue: 0                  # 0 = pure red. 350 = crimson. 12 = ember.
@@ -132,12 +139,20 @@ briefing:
     # scale:
     #   sleep_hours: 0.01666667      # minutes -> hours
 
+opsec:
+  # Encryption at rest for the profile, journal and health data. The key is
+  # machine-bound - sealed with DPAPI to your Windows account - so a copied
+  # folder or a pulled drive is useless, but malware already running as you can
+  # unseal it exactly as Erebus does. See docs/OPSEC.md before relying on it.
+  vault:
+    enabled: false
+
 safety:
   # Commands are only ever run from the registry below - Erebus cannot invent a
   # shell command. Set to false to also allow LLM-proposed shell (NOT advised).
   registry_only: true
   # These require a spoken confirmation before they fire.
-  confirm: ["shutdown", "restart", "sleep"]
+  confirm: ["shutdown", "restart", "sleep", "purge"]
 
 # =============================================================================
 #  ACTIONS - everything Erebus can actually do. Add your own freely.
@@ -196,6 +211,15 @@ actions:
     briefing:
       phrases: ["brief me", "briefing", "status report", "where am i",
                 "how am i doing", "assess me"]
+    stand_down:
+      phrases: ["stand down", "stop listening", "go dark", "privacy mode"]
+    resume_listening:
+      phrases: ["resume listening", "start listening", "come back", "wake up"]
+    security_status:
+      phrases: ["security status", "opsec check", "are we secure",
+                "check the chain"]
+    purge:
+      phrases: ["purge the record", "burn it", "wipe everything"]
 
   # --- Custom macros -------------------------------------------------------
   # A macro is a named list of steps. Steps are `run:` (shell) or `do:`

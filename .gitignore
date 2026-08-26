@@ -25,6 +25,13 @@ models/
 profile.local.yaml
 journal.local.jsonl
 health.local.jsonl
+audit.local.jsonl
+
+# Vault key. Machine-bound, but it is still a key.
+.erebus_key
+
+# Captured evidence. Case files are the operator's, and can contain anything.
+cases/
 
 # Health exports, in case one gets dropped in the repo folder. These are the
 # most sensitive files the project touches and none of them belong in git.

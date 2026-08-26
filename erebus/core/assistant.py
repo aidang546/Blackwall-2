@@ -14,6 +14,10 @@ import logging
 
 from ..actions.registry import Registry
 from ..briefing.compose import Briefer
+from ..opsec import actions as opsec_actions
+from ..opsec.audit import AuditLog
+from ..opsec.guard import Listening, purge
+from ..opsec.vault import Vault
 from ..pipeline import audio as audio_mod
 from ..pipeline import chunker
 from ..pipeline.brain import Brain, Decision
@@ -86,7 +90,18 @@ class Assistant:
         # briefing.
         self._briefer: Briefer | None = None
 
+        # Everything Erebus does is recorded. An assistant that runs programs
+        # and leaves no trace of having done so cannot be reviewed afterwards,
+        # and "what did it run, and who asked" is the question that matters.
+        self.audit = AuditLog()
+        self.listening = Listening()
+        self.vault = Vault(enabled=config.get("opsec.vault.enabled", False))
+
         self.registry.register_builtin("briefing", self.briefing)
+        self.registry.register_builtin("stand_down", self.stand_down)
+        self.registry.register_builtin("resume_listening", self.resume_listening)
+        self.registry.register_builtin("security_status", self.security_status)
+        self.registry.register_builtin("purge", self.purge_record)
 
         self._pending_confirm: tuple | None = None
         self._busy = asyncio.Lock()
@@ -168,6 +183,12 @@ class Assistant:
         """
         log.info("listening for wake word")
         async for frame in self.mic.frames():
+            if not self.listening.active:
+                # Frames are still drained so the queue cannot back up, but
+                # nothing looks at them: no wake detection, no recording, no
+                # level published. Standing down has to mean it.
+                continue
+
             sink = self._utterance
             if sink is not None:
                 sink.put_nowait(frame)
@@ -328,12 +349,49 @@ class Assistant:
         await self.bus.publish(
             "action", name=action.name, category=action.kind, value=value
         )
+        self.audit.record("action", name=action.name, category=action.kind,
+                          value=value)
         reply = await self.registry.run(action, value, say=self.say)
         if reply:
             await self.say(reply)
         else:
             # Silent success still needs to land somewhere the operator can see.
             await self.bus.publish("done", name=action.name)
+
+    # -- opsec ------------------------------------------------------------
+
+    async def stand_down(self) -> str:
+        self.audit.record("opsec.stand_down")
+        self.speaker.interrupt()
+        message = self.listening.stand_down()
+        await self.bus.publish("listening", **self.listening.state)
+        return message
+
+    async def resume_listening(self) -> str:
+        self.audit.record("opsec.resume")
+        message = self.listening.resume()
+        await self.bus.publish("listening", **self.listening.state)
+        return message
+
+    async def security_status(self) -> str:
+        self.audit.record("opsec.status")
+        return opsec_actions.spoken_summary(self.audit, self.listening, self.vault)
+
+    async def purge_record(self) -> str:
+        """Destroy the personal record.
+
+        Confirmation-gated in config, like shutdown - this is the one action
+        that loses data permanently, and a misheard sentence must not be able
+        to reach it.
+        """
+        removed = purge()
+        # Recorded after the fact, which starts a fresh chain: the audit log is
+        # itself purged, and a new genesis is the honest representation of that
+        # rather than a chain that pretends the old entries were never there.
+        self.audit._tip = None
+        self.audit.record("opsec.purge", removed=removed)
+        return (f"Purged {len(removed)} files." if removed
+                else "There was nothing to purge.")
 
     # -- briefing -------------------------------------------------------------
 

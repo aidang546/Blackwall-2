@@ -24,6 +24,8 @@ horizontal seam when it is listening or speaking.
 | **Conversation** | anything that isn't a command goes to a local LLM |
 | **Briefings** | "brief me" — where you stand, in a register that does not flatter you |
 | **Talks back fast** | streams as it thinks; talk over it and it stops |
+| **Investigation** | capture and attest to a page, read EXIF, research a domain |
+| **OPSEC** | tamper-evident audit chain, encrypted notes, "stand down" |
 
 Everything it can do lives in `config.yaml`. Adding a command is three lines of
 YAML; see [Adding your own commands](#adding-your-own-commands).
@@ -203,6 +205,12 @@ than incidental:
 
 `python -m erebus pair` prints the URL to open on your phone.
 
+Since it holds notes, sources and health data and can run programs, it is
+hardened in its own right: a hash-chained audit log of every action and every
+connection, per-address lockout on failed auth, machine-bound encryption at
+rest, and a real microphone kill switch. Full detail, including what the
+encryption does *not* protect against: **[docs/OPSEC.md](docs/OPSEC.md)**.
+
 ---
 
 ## Tuning the look
@@ -327,11 +335,12 @@ python tests/test_e2e.py             # boots the daemon, drives it over the webs
 python tests/test_brain.py           # the LLM layer, against a scripted Ollama
 python tests/test_briefing.py        # profile, journal, wearable parsing, prompt
 python tests/test_streaming.py       # sentence chunking and barge-in
+python tests/test_opsec.py           # audit chain, vault, lockout, EXIF
 python tests/test_voice_roundtrip.py # speaks commands, transcribes them, routes them
 python tests/test_wake.py            # speaks the wake word at the detector
 ```
 
-The first five need no GPU, model, or microphone. The last two need the voice
+The first six need no GPU, model, or microphone. The last two need the voice
 extras and one Piper voice, and skip cleanly without them.
 
 `test_brain.py` is the one that guards the security claim: it feeds the router

@@ -10,6 +10,18 @@
     python -m erebus fetch-voice NAME  download a Piper voice
     python -m erebus brief           compose today's briefing (add --out a.wav)
     python -m erebus pair            print the URL and QR data for your phone
+
+  Investigation
+    python -m erebus archive URL --case NAME    capture a page, hash it, archive it
+    python -m erebus examine FILE               hashes, EXIF, GPS, disguised types
+    python -m erebus domain example.com         RDAP, DNS, TLS, CT logs, wayback
+    python -m erebus cases [NAME]               what has been captured, and is it intact
+
+  Security
+    python -m erebus security        posture at a glance
+    python -m erebus audit           the tamper-evident record of what it did
+    python -m erebus vault --encrypt seal the profile, journal and health data
+    python -m erebus rotate-token    invalidate every paired device
 """
 
 from __future__ import annotations
@@ -220,6 +232,157 @@ def _wrap(text: str, width: int) -> list[str]:
     return lines
 
 
+# --------------------------------------------------------------------------
+#  Investigation and security
+# --------------------------------------------------------------------------
+
+def cmd_archive(config: Config, url: str, case: str) -> int:
+    """Capture a page and attest to what it said."""
+    from .opsec.audit import AuditLog
+    from .osint.archive import Archivist
+
+    async def go() -> int:
+        archivist = Archivist(case=case, audit=AuditLog())
+        record = await archivist.capture(url)
+        print("\n" + record.summary() + "\n")
+        return 1 if record.error else 0
+
+    return asyncio.run(go())
+
+
+def cmd_examine(config: Config, path: str) -> int:
+    """What a file can tell you about where it came from."""
+    from .opsec.audit import AuditLog
+    from .osint.media import examine
+
+    report = examine(path, audit=AuditLog())
+    print("\n" + report.summary())
+    if report.reverse_search:
+        print("\n  reverse image search")
+        for name, link in report.reverse_search.items():
+            print(f"    {name:<14} {link}")
+    print()
+    return 0
+
+
+def cmd_domain(config: Config, domain: str, subdomains: bool) -> int:
+    """Who runs a site, and what else they run."""
+    from .opsec.audit import AuditLog
+    from .osint.domain import investigate
+
+    async def go() -> int:
+        report = await investigate(domain, audit=AuditLog(),
+                                   subdomains=subdomains)
+        print("\n" + report.summary() + "\n")
+        return 0
+
+    return asyncio.run(go())
+
+
+def cmd_cases(config: Config, case: str | None) -> int:
+    from .osint.archive import Archivist, list_cases
+
+    if case:
+        archivist = Archivist(case=case)
+        entries = archivist.entries()
+        print(f"\n  {case}: {len(entries)} captures\n")
+        for entry in entries:
+            print(f"    {entry['fetched_at']}  {entry.get('sha256','')[:12]}…  "
+                  f"{entry.get('title') or entry['url']}")
+        print("\n  integrity")
+        for result in archivist.verify():
+            mark = "ok  " if result["state"] == "ok" else result["state"]
+            print(f"    {mark}  {result['file']}")
+        print()
+        return 0
+
+    cases = list_cases()
+    print()
+    for name in cases:
+        count = len(Archivist(case=name).entries())
+        print(f"  {name:<30} {count} captures")
+    print(f"\n  {len(cases)} case(s)\n" if cases else "  no cases yet\n")
+    return 0
+
+
+def cmd_audit(config: Config, tail: int, kind: str | None) -> int:
+    from .opsec.audit import AuditLog
+
+    audit = AuditLog()
+    intact, message = audit.verify()
+    print(f"\n  {'INTACT' if intact else 'BROKEN'}  {message}\n")
+    for record in audit.tail(limit=tail, kind=kind):
+        detail = " ".join(f"{k}={v}" for k, v in record.data.items()
+                          if v not in (None, "", [], {}))
+        print(f"  {record.ts:%Y-%m-%d %H:%M:%S}  {record.kind:<18} {detail}")
+    print()
+    return 0 if intact else 1
+
+
+def cmd_security(config: Config) -> int:
+    from .opsec.actions import security_report
+    from .opsec.audit import AuditLog
+    from .opsec.guard import Listening
+    from .opsec.vault import Vault
+
+    report = security_report(
+        AuditLog(), Listening(),
+        Vault(enabled=config.get("opsec.vault.enabled", False)),
+    )
+    print("\n" + "\n".join(f"  {line}" for line in report.splitlines()) + "\n")
+    return 0
+
+
+def cmd_vault(config: Config, action: str) -> int:
+    from .opsec.actions import PROTECTED
+    from .opsec.vault import Vault
+
+    vault = Vault(enabled=True)
+    if not vault.ready:
+        print("\n  The vault is unavailable - see the error above.\n")
+        return 1
+
+    if action == "status":
+        print()
+        for row in vault.status(PROTECTED):
+            size = f"{row.get('bytes', 0)} bytes" if row["state"] != "absent" else ""
+            print(f"  {row['file']:<28} {row['state']:<12} {size}")
+        print()
+        return 0
+
+    encrypting = action == "encrypt"
+    changed = 0
+    for path in PROTECTED:
+        if not path.exists():
+            continue
+        raw = path.read_bytes()
+        is_sealed = raw.startswith(b"EREBUS1\n")
+        if encrypting and not is_sealed:
+            path.write_bytes(vault.encrypt(raw))
+            changed += 1
+        elif not encrypting and is_sealed:
+            plain = vault.decrypt(raw)
+            if plain is None:
+                print(f"  {path.name}: could not decrypt, leaving it alone")
+                continue
+            path.write_bytes(plain)
+            changed += 1
+    print(f"\n  {'Encrypted' if encrypting else 'Decrypted'} {changed} file(s).\n")
+    return 0
+
+
+def cmd_rotate_token(config: Config) -> int:
+    from .opsec.audit import AuditLog
+    from .opsec.guard import rotate_token
+
+    token = rotate_token()
+    AuditLog().record("opsec.token_rotated")
+    print(f"\n  New token: {token}\n")
+    print("  Every paired device is now locked out. Re-pair with:\n")
+    print("    python -m erebus pair\n")
+    return 0
+
+
 def cmd_pair(config: Config) -> int:
     token = config.resolve_token()
     port = config.get("server.port", 8848)
@@ -347,7 +510,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="erebus", description="Erebus voice assistant")
     parser.add_argument("command", nargs="?", default="run",
                         choices=["run", "devices", "actions", "say", "pair",
-                                 "voices", "fetch-voice", "brief"])
+                                 "voices", "fetch-voice", "brief",
+                                 "archive", "examine", "domain", "cases",
+                                 "audit", "security", "vault", "rotate-token"])
     parser.add_argument("text", nargs="*",
                         help="text for `say`, or a voice name for `fetch-voice`")
     parser.add_argument("--out", metavar="FILE",
@@ -356,6 +521,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="say: bypass the voice effects chain")
     parser.add_argument("--voice", metavar="NAME",
                         help="say: override the configured voice")
+    parser.add_argument("--case", default="inbox",
+                        help="archive: which case file to file the capture under")
+    parser.add_argument("--no-subdomains", action="store_true",
+                        help="domain: skip the certificate-transparency lookup")
+    parser.add_argument("--tail", type=int, default=25,
+                        help="audit: how many entries to show")
+    parser.add_argument("--vault", default="status",
+                        choices=["status", "encrypt", "decrypt"],
+                        help="vault: what to do")
     parser.add_argument("--observe", metavar="TEXT",
                         help="brief: describe what the assistant can see "
                              "(stands in for the webcam until vision lands)")
@@ -378,6 +552,31 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_actions(config)
     if args.command == "pair":
         return cmd_pair(config)
+    if args.command == "archive":
+        if not args.text:
+            print("usage: python -m erebus archive https://example.com [--case name]")
+            return 2
+        return cmd_archive(config, args.text[0], args.case)
+    if args.command == "examine":
+        if not args.text:
+            print("usage: python -m erebus examine path/to/file.jpg")
+            return 2
+        return cmd_examine(config, args.text[0])
+    if args.command == "domain":
+        if not args.text:
+            print("usage: python -m erebus domain example.com")
+            return 2
+        return cmd_domain(config, args.text[0], not args.no_subdomains)
+    if args.command == "cases":
+        return cmd_cases(config, args.text[0] if args.text else None)
+    if args.command == "audit":
+        return cmd_audit(config, args.tail, args.text[0] if args.text else None)
+    if args.command == "security":
+        return cmd_security(config)
+    if args.command == "vault":
+        return cmd_vault(config, args.vault)
+    if args.command == "rotate-token":
+        return cmd_rotate_token(config)
     if args.command == "brief":
         return cmd_brief(config, args.out, args.observe)
     if args.command == "voices":
