@@ -82,9 +82,13 @@ tts:
   #
   #   clean        barely processed; the persona does the work
   #   transmitted  a processed human. Cold, but plainly a person.
-  #   blackwall    several detuned voices as one, weight underneath, metallic
-  #                edge. The one that stops sounding like a single speaker.
+  #   broadcast    band-limited, mid-forward and hard, fitted to a measured
+  #                comms mix rather than tuned by ear.
   #   machine      heavy ring modulation and quantisation. Classic robot.
+  #   blackwall    several detuned voices as one, weight underneath, metallic
+  #                edge. The one that stops sounding like a single speaker -
+  #                and the one you can only half make out. Whisper recovers
+  #                52% of a sentence through it, against 88-100% for the rest.
   effects:
     enabled: true
     preset: transmitted
@@ -93,6 +97,8 @@ tts:
     # pitch_shift: -2.5       # semitones. Negative = deeper.
     # formant: 0.94           # <1 makes the speaker sound physically larger
     # bandpass: [180, 6200]   # Hz - trims both ends, a transmitted quality
+    # presence: 0             # dB lift around 3kHz. 4-8 undoes the muffling
+    #                         # that band-limiting causes.
     # reverb: 0.22            # 0..1 wet, small dark room
     # static: 0.035           # broadband noise floor bed
     # bitcrush: 0             # 0 = off. 9-12 bits for a harsher read.

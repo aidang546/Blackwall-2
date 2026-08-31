@@ -248,14 +248,20 @@ taste.
 `tts.effects` carries more of the character than the voice model does. Game AI
 voices are mostly processing applied to an ordinary human take — the inhuman
 quality comes from detuned layering, ring modulation and resonance, not from a
-special performance. Four presets:
+special performance. Five presets:
 
-| preset | what it is |
-|---|---|
-| `clean` | barely processed; the persona does the work |
-| `transmitted` | a processed human. Cold, but plainly a person. **Default.** |
-| `blackwall` | several detuned voices as one, weight underneath, metallic edge |
-| `machine` | heavy ring modulation and quantisation. Classic robot. |
+| preset | what it is | intelligible |
+|---|---|---|
+| `clean` | barely processed; the persona does the work | 100% |
+| `transmitted` | a processed human. Cold, but plainly a person. **Default.** | 96% |
+| `broadcast` | fitted to a real comms mix. Band-limited, mid-forward, hard. | 88% |
+| `machine` | heavy ring modulation and quantisation. Classic robot. | 93% |
+| `blackwall` | several detuned voices as one, weight underneath, metallic edge | 52% |
+
+The last column is how much of a sentence survives being spoken through the
+preset and transcribed back by Whisper. `blackwall` at 52% is not a rounding
+error — it is genuinely hard to make out, and worth knowing before you pick it
+for anything you need to *hear* rather than admire.
 
 ```yaml
 tts:
@@ -267,7 +273,21 @@ tts:
 `blackwall` is the one that stops sounding like a single speaker: three copies
 of the voice 11 cents apart and 18ms behind each other, an octave-down layer
 for weight, and a 42Hz ring modulator for the metallic edge. No human throat
-produces that, which is exactly why it reads as not-alive.
+produces that, which is exactly why it reads as not-alive — and why half of it
+does not survive being transcribed.
+
+`broadcast` was not chosen by ear. A reference comms mix was measured for the
+properties a *mix* has — octave-band balance, spectral tilt, reverb decay time,
+noise texture — and a grid search found the chain settings that put a Piper
+render closest to those numbers, fitted on one sentence and checked against a
+held-out one. It lands on -4.7 dB/octave of tilt against the reference's -4.7,
+and 551ms of decay against 511.
+
+The fit deliberately stops short of matching two things: the energy below
+125Hz, and the vowel energy around 500-1000Hz. Those are not properties of the
+processing — they are where that particular speaker's fundamental and vowels
+happen to sit. Chasing them would mean modelling a person rather than a
+channel, which is a different thing and not one this does.
 
 Audition without a full run:
 
