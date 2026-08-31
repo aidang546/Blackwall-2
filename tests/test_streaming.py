@@ -123,8 +123,13 @@ async def test_presets() -> None:
     # A preset name plus an override must merge, not replace.
     merged = voicefx.resolve({"preset": "blackwall", "reverb": 0.9})
     check("an explicit key overrides the preset", merged["reverb"] == 0.9)
+    # Assert the merge, not a particular tuning value: pinning one here meant
+    # that retuning a preset failed this test for no reason.
+    untouched = {k: v for k, v in voicefx.PRESETS["blackwall"].items()
+                 if k != "reverb"}
     check("and the rest of the preset survives",
-          merged.get("detune_voices") == 3)
+          all(merged.get(k) == v for k, v in untouched.items()),
+          f"{len(untouched)} other keys")
     check("an unknown preset degrades rather than raising",
           voicefx.resolve({"preset": "nonsense", "reverb": 0.1})["reverb"] == 0.1)
     check("no preset passes settings through untouched",

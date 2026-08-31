@@ -27,7 +27,8 @@ except ImportError:  # pragma: no cover
     FX_AVAILABLE = False
 
 
-def _wsola(x, rate: float, frame: int = 1024, overlap: int = 4):
+def _wsola(x, rate: float, frame: int = 1024, overlap: int = 4,
+           out_len: int | None = None):
     """Waveform-similarity overlap-add time stretch. rate > 1 = longer.
 
     Plain OLA - which this used to be - lands each frame on an arbitrary phase
@@ -41,7 +42,7 @@ def _wsola(x, rate: float, frame: int = 1024, overlap: int = 4):
         return x
     x = np.asarray(x, dtype=np.float32)
     hop_out = frame // overlap
-    hop_in = max(1, int(round(hop_out / rate)))
+    step_in = hop_out / rate          # fractional; rounded only when read
     search = hop_out // 2
     ahead = frame - hop_out           # the region two adjacent frames share
     window = np.hanning(frame).astype(np.float32)
@@ -54,7 +55,7 @@ def _wsola(x, rate: float, frame: int = 1024, overlap: int = 4):
     out_pos = 0
     k = 0
     while True:
-        nominal = k * hop_in
+        nominal = int(round(k * step_in))
         if nominal + frame >= len(x) or out_pos + frame >= n_out:
             break
 
@@ -81,7 +82,14 @@ def _wsola(x, rate: float, frame: int = 1024, overlap: int = 4):
         k += 1
 
     norm[norm < 1e-6] = 1.0
-    return (out[: out_pos + frame] / norm[: out_pos + frame]).astype(np.float32)
+    # The loop lays frames down `hop_out` apart, so left alone the output
+    # length - and therefore the pitch ratio, which is that length over the
+    # input's - can only land on multiples of a hop. That is a step of about
+    # 6.7 cents, coarser than the whole useful range of the detune control: 5
+    # and 8 cents both came out as 10.8, and 11 and 15 both as 17.5. Cutting
+    # to the exact requested length instead makes the ratio exact.
+    n = out_pos + frame if out_len is None else min(out_len, len(out))
+    return (out[:n] / norm[:n]).astype(np.float32)
 
 
 def _resample_to(x, target: int):
@@ -106,7 +114,7 @@ def pitch_shift(x, semitones: float):
     if abs(semitones) < 0.01:
         return x
     ratio = 2.0 ** (semitones / 12.0)
-    stretched = _wsola(x, ratio)
+    stretched = _wsola(x, ratio, out_len=int(round(len(x) * ratio)))
     return _resample_to(stretched, len(x))
 
 
@@ -287,34 +295,60 @@ def ring_mod(x, freq: float, mix: float, sample_rate: int):
 
 def detune_layers(x, voices: int, cents: float, spread_ms: float,
                   sample_rate: int):
-    """Stack slightly detuned, slightly delayed copies of the voice.
+    """Stack slightly detuned copies of the voice.
 
     This is the effect people actually mean by "sounds like an AI": several
     near-identical voices speaking as one, never quite in unison. A single
     speaker cannot produce it, and no amount of acting approximates it.
 
-    Small numbers matter here - 8 to 20 cents and 10 to 30 ms. Push either
-    further and it stops being one entity and becomes a crowd.
+    Built out of modulated delay lines rather than pitch shifters, which is how
+    a chorus has always been built and, it turns out, the only way this works
+    at all. Layering `pitch_shift` copies meant each layer went through its own
+    WSOLA pass and picked its own frame alignment, so the stack was smeared
+    against itself and comb-filtered differently every few milliseconds. It
+    sounded thick, and it was: at 10 cents with no delay spread it cost 32
+    points of word accuracy, and adding a fourth voice cost 20 more. A moving
+    delay costs almost nothing, because every layer stays the same waveform.
+
+    The pitch offset is the *rate of change* of the delay, so an LFO of depth
+    D at rate f detunes by 2*pi*f*D/sr - alternately sharp and flat, which is
+    what a real unison does anyway.
+
+    Small numbers matter here: 8 to 20 cents, and 3 to 15 ms of spread. Push
+    either further and it stops being one entity and becomes a crowd.
     """
     if voices < 2 or cents <= 0:
         return x
 
-    layers = [x]
-    for index in range(1, voices):
-        # Alternate sharp and flat so the stack stays centred on the original.
-        direction = 1 if index % 2 else -1
-        offset = direction * cents * (1 + index // 2) / 100.0
-        layer = pitch_shift(x, offset)
+    n = len(x)
+    if n < 4:
+        return x
+    index = np.arange(n, dtype=np.float64)
+    # The dry voice stays dominant and the layers sit under it. Summing them
+    # all at equal weight - which is what "average the stack" amounts to -
+    # makes each delayed copy a comb filter with full-depth nulls every
+    # 1/delay Hz, and on speech that is not a chorus, it is a phaser eating
+    # the formants. At a third of the level the same notches are a couple of
+    # dB of ripple.
+    layer_gain = 0.35
+    total = x.astype(np.float64).copy()
 
-        delay = int(sample_rate * (spread_ms / 1000.0) * index)
-        if delay:
-            layer = np.concatenate([np.zeros(delay, dtype=np.float32), layer])[: len(x)]
-        if len(layer) < len(x):
-            layer = np.pad(layer, (0, len(x) - len(layer)))
-        layers.append(layer[: len(x)])
+    for voice in range(1, voices):
+        # Mutually detuned rates, so the layers never lock into a shared cycle.
+        rate = 0.47 + 0.13 * voice
+        phase = 2.0 * np.pi * voice / max(1, voices - 1)
+        # depth such that the peak slope of the delay is the requested detune
+        depth = (cents / 1731.0) * sample_rate / (2.0 * np.pi * rate)
+        base = sample_rate * (spread_ms / 1000.0) * voice
 
-    stacked = np.sum(layers, axis=0) / len(layers)
-    return stacked.astype(np.float32)
+        delay = base + depth * (1.0 + np.sin(2.0 * np.pi * rate * index / sample_rate + phase))
+        read = np.clip(index - delay, 0, n - 1)
+        lo = np.floor(read).astype(np.int64)
+        hi = np.minimum(lo + 1, n - 1)
+        frac = read - lo
+        total += layer_gain * (x[lo] * (1.0 - frac) + x[hi] * frac)
+
+    return (total / (1.0 + layer_gain * (voices - 1))).astype(np.float32)
 
 
 def sub_octave(x, mix: float):
@@ -357,14 +391,19 @@ PRESETS = {
         pitch_shift=-2.5, formant=0.94, bandpass=[180, 6200],
         reverb=0.22, static=0.035, bitcrush=0,
     ),
-    # Several voices as one, slightly detuned, with weight underneath and a
-    # metallic edge. This is the one that sounds like something behind a wall.
+    # The inhuman ingredients that a voice actually survives: weight
+    # underneath, a metallic edge, a resonant cavity. Layering used to be the
+    # centrepiece and is now off by default, because measurement said it could
+    # not stay: three voices cost 20-25 points of word accuracy no matter how
+    # they were built - as pitch-shifted copies or as a proper chorus, at 0 ms
+    # of delay spread or at 28 - and this preset was transcribing at 0%. Turn
+    # `detune_voices: 3` back on if you want it and can live with that.
     "blackwall": dict(
-        pitch_shift=-3.0, formant=0.90, bandpass=[140, 6800],
-        detune_voices=3, detune_cents=11, detune_spread_ms=18,
-        sub_octave=0.22, ring_freq=42, ring_mix=0.13,
-        comb_freq=180, comb_feedback=0.18,
-        reverb=0.30, static=0.045, bitcrush=0,
+        pitch_shift=-3.0, formant=0.94, bandpass=[170, 5600], presence=8.0,
+        detune_voices=1, detune_cents=16, detune_spread_ms=0,
+        sub_octave=0.14, ring_freq=42, ring_mix=0.07,
+        comb_freq=180, comb_feedback=0.10,
+        reverb=0.22, static=0.035, bitcrush=0,
     ),
     # Classic machine: heavy ring modulation, quantised, band-limited hard.
     "machine": dict(

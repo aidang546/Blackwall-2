@@ -252,16 +252,19 @@ special performance. Five presets:
 
 | preset | what it is | intelligible |
 |---|---|---|
-| `clean` | barely processed; the persona does the work | 100% |
-| `transmitted` | a processed human. Cold, but plainly a person. **Default.** | 96% |
-| `broadcast` | fitted to a real comms mix. Band-limited, mid-forward, hard. | 88% |
-| `machine` | heavy ring modulation and quantisation. Classic robot. | 93% |
-| `blackwall` | several detuned voices as one, weight underneath, metallic edge | 52% |
+| `clean` | barely processed; the persona does the work | 93% |
+| `machine` | heavy ring modulation and quantisation. Classic robot. | 75% |
+| `broadcast` | fitted to a real comms mix. Band-limited, mid-forward, hard. | 71% |
+| `transmitted` | a processed human. Cold, but plainly a person. **Default.** | 67% |
+| `blackwall` | weight underneath, metallic edge, resonant cavity | 37% |
 
 The last column is how much of a sentence survives being spoken through the
-preset and transcribed back by Whisper. `blackwall` at 52% is not a rounding
-error — it is genuinely hard to make out, and worth knowing before you pick it
-for anything you need to *hear* rather than admire.
+preset and transcribed back by Whisper — five sentences, two runs each, against
+96% for the unprocessed voice. Treat gaps under about ten points as a tie; the
+measurement is that noisy. `blackwall` at 37% is not noise, though, and is
+worth knowing before you pick it for anything you need to *hear* rather than
+admire. `broadcast` and `transmitted` are a coin toss on clarity, so pick
+between them on character.
 
 ```yaml
 tts:
@@ -270,11 +273,15 @@ tts:
     reverb: 0.4        # any key set alongside a preset overrides just that key
 ```
 
-`blackwall` is the one that stops sounding like a single speaker: three copies
-of the voice 11 cents apart and 18ms behind each other, an octave-down layer
-for weight, and a 42Hz ring modulator for the metallic edge. No human throat
-produces that, which is exactly why it reads as not-alive — and why half of it
-does not survive being transcribed.
+`blackwall` used to be built around layering — three copies of the voice a few
+cents apart, speaking as one. That is the effect people mean by "sounds like an
+AI", and it had to go: measured, it cost 20-25 points of word accuracy however
+it was built, as pitch-shifted copies or as a proper chorus, at no delay spread
+or at 28ms, and the preset as a whole was transcribing at **0%**. What is left
+is the part a voice survives — an octave-down layer for weight, a 42Hz ring
+modulator for the metallic edge, and a tuned comb for the resonant-cavity
+quality. Set `detune_voices: 3` to put the layering back if you want it and can
+live with the cost.
 
 `broadcast` was not chosen by ear. A reference comms mix was measured for the
 properties a *mix* has — octave-band balance, spectral tilt, reverb decay time,

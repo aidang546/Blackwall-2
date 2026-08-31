@@ -122,8 +122,9 @@ Full catalogue: <https://rhasspy.github.io/piper-samples/>. `python -m erebus
 voices` lists what you have downloaded and marks the active one.
 
 Tune the processing under `tts.effects`. Start by picking a preset —
-`transmitted` is the default, `broadcast` is harder and more radio-like,
-`blackwall` is the least human and the least intelligible. `pitch_shift`,
+`transmitted` is the default, `broadcast` is harder and more radio-like and
+measures about the same for clarity, `blackwall` is the least human and by some
+distance the least intelligible. `pitch_shift`,
 `presence` and `reverb` do most of the remaining work. The whole chain costs
 about 30 ms per second of speech, so it is not worth disabling for speed.
 

@@ -85,10 +85,11 @@ tts:
   #   broadcast    band-limited, mid-forward and hard, fitted to a measured
   #                comms mix rather than tuned by ear.
   #   machine      heavy ring modulation and quantisation. Classic robot.
-  #   blackwall    several detuned voices as one, weight underneath, metallic
-  #                edge. The one that stops sounding like a single speaker -
-  #                and the one you can only half make out. Whisper recovers
-  #                52% of a sentence through it, against 88-100% for the rest.
+  #   blackwall    weight underneath, metallic edge, resonant cavity. The
+  #                least human and the least clear: Whisper recovers about
+  #                37% of a sentence through it, against 67-93% for the rest.
+  #                `detune_voices: 3` adds the layered-voices character and
+  #                costs another 10-25 points on top of that.
   effects:
     enabled: true
     preset: transmitted

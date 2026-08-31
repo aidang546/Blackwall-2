@@ -9,6 +9,11 @@ by ear, and by ear "processed" and "broken" sound alike:
     on noise, devastating on a voice.
   * `formant_shift` resampled the whole signal, which moves f0 along with the
     formants. That is a pitch shift wearing another name.
+  * The stretch laid frames a whole hop apart, so the output length - and with
+    it the pitch ratio, which is that length over the input's - could only land
+    on multiples of ~6.7 cents. That is coarser than the entire useful range of
+    the detune control: 5 and 8 cents both came out as 10.8, and 11 and 15 both
+    as 17.5, so two thirds of the dial did nothing.
 
 Both are now asserted numerically, because both are the kind of failure a
 listener writes off as character.
@@ -51,6 +56,25 @@ def tone(f0: float = 110.0, seconds: float = 2.0, partials: int = 25):
     t = np.arange(int(SR * seconds)) / SR
     x = sum(np.sin(2 * np.pi * f0 * k * t) / k for k in range(1, partials))
     return (x * 0.1).astype(np.float32)
+
+
+def precise_f0(x, low: float = 30.0, high: float = 260.0) -> float:
+    """Parabolic-interpolated FFT peak - accurate to a fraction of a cent.
+
+    The autocorrelation estimate below is quantised to a whole lag, which is
+    about 40 cents at 110 Hz: far too coarse to see a detune-sized error.
+    """
+    y = np.asarray(x, dtype=np.float64) * np.hanning(len(x))
+    spec = np.abs(np.fft.rfft(y))
+    freqs = np.fft.rfftfreq(len(y), 1 / SR)
+    band = (freqs > low) & (freqs < high)
+    i = int(np.where(band)[0][np.argmax(spec[band])])
+    a, b, c = (np.log(spec[j] + 1e-12) for j in (i - 1, i, i + 1))
+    return (i + 0.5 * (a - c) / (a - 2 * b + c + 1e-12)) * SR / len(y)
+
+
+def cents_between(x, y) -> float:
+    return 1200.0 * np.log2(precise_f0(y) / precise_f0(x))
 
 
 def measured_f0(x) -> float:
@@ -97,6 +121,23 @@ for semitones in (-4.0, -2.0, 3.0):
     )
 
 check("a zero shift is a no-op", V.pitch_shift(src, 0.0) is src)
+
+print("\npitch shift, at detune resolution")
+fine = tone(seconds=3.0)
+for cents in (5.0, 8.0, 11.0, 15.0, 22.0):
+    got = cents_between(fine, V.pitch_shift(fine, cents / 100.0))
+    check(
+        f"{cents:.0f} cents means {cents:.0f} cents",
+        abs(got - cents) < 1.5,
+        f"got {got:.1f}",
+    )
+distinct = {round(cents_between(fine, V.pitch_shift(fine, c / 100.0)))
+            for c in (5.0, 8.0, 11.0, 15.0, 22.0)}
+check(
+    "and five settings give five different results",
+    len(distinct) == 5,
+    f"{sorted(distinct)}",
+)
 
 print("\nformant shift")
 for factor in (0.85, 0.92, 1.15):
