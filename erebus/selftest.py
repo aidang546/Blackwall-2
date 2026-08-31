@@ -202,20 +202,50 @@ def _launch_target(command: str) -> str | None:
 
 
 def _resolves(target: str) -> bool:
-    """Is this an executable on PATH, or a registered URI scheme?"""
-    if ":" in target and not target[1:2] == ":":       # spotify:, steam://
-        scheme = target.split(":", 1)[0]
-        if sys.platform != "win32":
-            return False
-        try:
-            import winreg
+    """Is this something Windows can actually launch?
 
-            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, scheme) as key:
-                winreg.QueryValueEx(key, "URL Protocol")
-            return True
+    Three ways it can be, and checking only the first produces false alarms on
+    the shipped config: `start chrome` works on a machine where chrome.exe is
+    nowhere on PATH, because the shell also consults the App Paths registry
+    key. Warning that a working app is missing is worse than not checking.
+    """
+    if ":" in target and target[1:2] != ":":           # spotify:, steam://
+        return _scheme_registered(target.split(":", 1)[0])
+    if shutil.which(target) is not None:
+        return True
+    return _in_app_paths(target)
+
+
+def _scheme_registered(scheme: str) -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, scheme) as key:
+            winreg.QueryValueEx(key, "URL Protocol")
+        return True
+    except OSError:
+        return False
+
+
+def _in_app_paths(name: str) -> bool:
+    """The registry list the shell searches that PATH does not include."""
+    if sys.platform != "win32":
+        return False
+    import winreg
+
+    if not name.lower().endswith(".exe"):
+        name += ".exe"
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            path = (r"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths"
+                    "\\" + name)
+            with winreg.OpenKey(root, path):
+                return True
         except OSError:
-            return False
-    return shutil.which(target) is not None
+            continue
+    return False
 
 
 def probe_hotkey(config) -> list[Probe]:
@@ -246,12 +276,29 @@ def probe_hotkey(config) -> list[Probe]:
     keys.stop()
 
     taken = [c for c in combos if c not in active]
-    if taken:
-        return [Probe("hotkey", FAIL,
-                      f"{', '.join(taken)} already owned by another program",
-                      "Pick a different combo under `hotkey:` in "
-                      "config.local.yaml.")]
-    return [Probe("hotkey", PASS, f"registered and released: {', '.join(active)}")]
+    if not taken:
+        return [Probe("hotkey", PASS, f"registered and released: {', '.join(active)}")]
+
+    # The likeliest owner is Erebus itself. Telling someone to change a
+    # working config because their assistant is running is worse than useless.
+    if _erebus_running(config):
+        return [Probe("hotkey", WARN,
+                      f"{', '.join(taken)} held by the running Erebus",
+                      "That is the expected result while it is up. Stop it and "
+                      "re-run if you want this probe to register them itself.")]
+    return [Probe("hotkey", FAIL,
+                  f"{', '.join(taken)} already owned by another program",
+                  "Pick a different combo under `hotkey:` in config.local.yaml.")]
+
+
+def _erebus_running(config) -> bool:
+    """Is something already listening on our port?"""
+    import socket
+
+    port = int(config.get("server.port", 8848) or 8848)
+    with socket.socket() as probe:
+        probe.settimeout(0.3)
+        return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
 # --------------------------------------------------------------------------
@@ -313,6 +360,15 @@ async def probe_voice(config) -> list[Probe]:
     started = time.perf_counter()
     audio, sample_rate = await speaker.synthesize(phrase)
     synth_ms = (time.perf_counter() - started) * 1000
+    # load() returns True for the SAPI fallback while leaving _voice unset, and
+    # synthesize() then hands back None rather than audio. Without this the
+    # probe dies on len(None) and reports a bare TypeError instead of the
+    # message three lines above.
+    if audio is None:
+        return [Probe("voice", WARN,
+                      f"backend fell back to {speaker.backend!r} - no audio to measure",
+                      "python -m erebus fetch-voice en_GB-alan-medium gives you "
+                      "the real voice and makes this probe meaningful.")]
     seconds = len(audio) / sample_rate
     out.append(Probe("speech out", PASS,
                      f"{synth_ms:.0f} ms to synthesise {seconds:.1f}s "
@@ -397,18 +453,13 @@ async def probe_audio_devices(config) -> list[Probe]:
 
     device = config.get("audio.input_device")
     sample_rate = int(config.get("audio.sample_rate", 16000))
-    cfg = audio_mod.AudioConfig(sample_rate=sample_rate, device=device)
-    mic = audio_mod.Microphone(cfg)
-    mic.start()
-    levels = []
-    try:
-        deadline = asyncio.get_running_loop().time() + 1.2
-        async for frame in mic.frames():
-            levels.append(audio_mod.rms(frame))
-            if asyncio.get_running_loop().time() >= deadline:
-                break
-    finally:
-        mic.stop()
+    # Reuse calibrate's capture: it bounds the wait from outside the loop,
+    # which matters because frames() yields nothing while its queue is empty.
+    # Without that, "opened but delivered no frames" - the case the check
+    # below exists for - hangs instead of being reported.
+    from .calibrate import _levels
+
+    levels = await _levels(1.2, device=device, sample_rate=sample_rate)
 
     if not levels:
         return [Probe("microphone", FAIL, "opened, but no frames arrived",

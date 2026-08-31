@@ -53,7 +53,10 @@ def step(number: int, title: str) -> None:
 
 
 def run(command: list[str], check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(command, capture_output=True, text=True)
+    # Always from the repo root: `-r requirements.txt` is a relative path and
+    # `-m erebus` needs the package importable, and neither is true if this is
+    # run from anywhere else - which `python C:\\...\\install.py` is.
+    result = subprocess.run(command, capture_output=True, text=True, cwd=ROOT)
     if check and result.returncode != 0:
         tail = (result.stderr or result.stdout or "").strip().splitlines()
         detail = tail[-1] if tail else f"exit {result.returncode}"
@@ -86,12 +89,23 @@ def make_venv(dry: bool) -> str:
     return "created"
 
 
-def pip_install(args: list[str], dry: bool) -> str:
+def pip_install(args: list[str], dry: bool, sentinel: str | None = None) -> str:
+    """Install, every time.
+
+    An earlier version skipped the whole file when one sentinel module
+    imported, which broke the promise this script makes: a run that failed
+    halfway through would never retry the packages after the failure, because
+    the first one was now present. pip is the thing that knows what is already
+    satisfied, so let it decide - it costs a few seconds when there is nothing
+    to do.
+    """
+    already = sentinel is not None and installed(sentinel)
     if dry:
-        return f"would pip install {' '.join(args)}"
+        return (f"{sentinel} present; would still let pip check the rest"
+                if already else f"would pip install {' '.join(args)}")
     run([str(PYTHON), "-m", "pip", "install", "--quiet", "--upgrade", "pip"], check=False)
     run([str(PYTHON), "-m", "pip", "install", "--quiet", *args])
-    return "installed"
+    return "up to date" if already else "installed"
 
 
 def installed(module: str) -> bool:
@@ -126,11 +140,22 @@ def ollama_running() -> bool:
 
 
 def ollama_has_model(name: str) -> bool:
+    """Is this exact tag pulled?
+
+    Matching on the name with the tag stripped means an existing llama3.1:70b
+    answers for llama3.1:8b - the installer finishes clean and the brain 404s
+    the first time you speak to it. Tags are the whole point of a tag.
+    """
+    import json
+
     try:
         with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=3) as f:
-            return name.split(":")[0] in f.read().decode("utf-8", "replace")
-    except Exception:  # noqa: BLE001
+            payload = json.load(f)
+    except Exception:  # noqa: BLE001 - not running, no network, bad JSON
         return False
+    wanted = name if ":" in name else f"{name}:latest"
+    return any(model.get("name") == wanted
+               for model in payload.get("models") or [])
 
 
 def setup_ollama(dry: bool) -> str:
@@ -179,10 +204,10 @@ def main(argv=None) -> int:
             return 0
 
         step(3, "Core packages")
-        say(f"      {'already installed' if installed('fastapi') else pip_install(['-r', 'requirements.txt'], dry)}")
+        say(f"      {pip_install(['-r', 'requirements.txt'], dry, 'fastapi')}")
 
         step(4, "Voice packages")
-        say(f"      {'already installed' if installed('sounddevice') else pip_install(['-r', 'requirements-voice.txt'], dry)}")
+        say(f"      {pip_install(['-r', 'requirements-voice.txt'], dry, 'sounddevice')}")
 
         step(5, "GPU acceleration")
         if args.no_gpu:

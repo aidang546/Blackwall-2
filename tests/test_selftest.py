@@ -108,6 +108,39 @@ probes = S.probe_handlers(broken)
 check("an action with no handler is reported, not ignored",
       probes[0].state == S.FAIL, probes[0].detail)
 
+print("\nA BACKEND THAT LOADS BUT SYNTHESISES NOTHING")
+# Speaker.load() returns True for the SAPI fallback while leaving _voice unset,
+# and synthesize() then returns (None, rate). The probe used to take len() of
+# that and report a bare TypeError instead of the message it already had.
+import erebus.pipeline.tts as tts_mod   # noqa: E402
+
+
+class SilentSpeaker:
+    backend = "sapi"
+
+    def __init__(self, **kwargs):
+        pass
+
+    def load(self):
+        return True
+
+    async def synthesize(self, text):
+        return None, 22050
+
+
+real_speaker = tts_mod.Speaker
+tts_mod.Speaker = SilentSpeaker
+try:
+    probes = asyncio.run(S._guarded("voice", lambda: S.probe_voice(Config.load())))
+finally:
+    tts_mod.Speaker = real_speaker
+
+check("no audio is a finding, not a TypeError",
+      len(probes) == 1 and probes[0].state == S.WARN, probes[0].detail)
+check("and it names the backend that fell back",
+      "sapi" in probes[0].detail, probes[0].detail)
+check("and says how to fix it", "fetch-voice" in probes[0].fix)
+
 print("\nTHE WHOLE RUN")
 code = asyncio.run(S.run(Config.load()))
 check("returns an int exit code", isinstance(code, int), str(code))
@@ -119,11 +152,12 @@ print("\nTHE INSTALLER")
 import subprocess   # noqa: E402
 
 root = pathlib.Path(__file__).resolve().parents[1]
+venv_before = (root / ".venv").exists()
 proc = subprocess.run([sys.executable, str(root / "install.py"), "--check"],
                       capture_output=True, text=True, timeout=120)
 check("--check runs and exits cleanly", proc.returncode in (0, 1),
       f"exit {proc.returncode}")
-venv_before = (root / ".venv").exists()
+# Snapshotted before the subprocess, or this compares a value to itself.
 check("--check creates no venv", (root / ".venv").exists() == venv_before)
 check("it says so up front", "nothing will change" in proc.stdout)
 check("it reports the Python it found", "Python" in proc.stdout)
@@ -135,6 +169,11 @@ import install  # noqa: E402  - importable is the point
 
 check("re-running is safe: every step checks first",
       install.make_venv(dry=True) in ("already there", "would create .venv"))
+check("an exact model tag is required, not a prefix match",
+      not install.ollama_has_model("llama3.1:8b") or install.ollama_running(),
+      "a 70b must not satisfy an 8b")
+check("the installer runs commands from the repo root",
+      "cwd=ROOT" in (root / "install.py").read_text())
 message = _try_ollama()
 check("a missing Ollama stops with something to type",
       "winget" in message, message.splitlines()[0] if message else "no message")

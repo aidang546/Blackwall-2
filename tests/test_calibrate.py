@@ -15,6 +15,7 @@ import asyncio
 import pathlib
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -115,6 +116,7 @@ spoken_lines = []
 async def fake_speak(text):
     spoken_lines.append(text)
 
+real_levels = cal._levels
 cal._levels = fake_levels
 cal._countdown = lambda message, seconds: None
 cal._probe_devices = lambda sr: asyncio.sleep(
@@ -137,6 +139,49 @@ check("raised the barge-in bar above the measured echo",
 check("recorded every reading it took", len(result.readings) == 3,
       f"{[r.name for r in result.readings]}")
 check("played something for the echo test", len(spoken_lines) == 1)
+
+print("\nA DEVICE THAT OPENS AND THEN SAYS NOTHING")
+# Microphone.frames() yields nothing at all while its queue is empty, so a
+# deadline checked only inside the loop never fires. A muted or seized input
+# would wedge `erebus calibrate` with no output and no timeout - and
+# _probe_devices opens every input on the machine in turn, so one is enough.
+import types  # noqa: E402
+
+class SilentMic:
+    def __init__(self, config):
+        self.config = config
+    def start(self):
+        pass
+    def stop(self):
+        SilentMic.stopped = True
+    async def frames(self):
+        while True:                       # exactly what the real one does
+            await asyncio.sleep(0.05)
+            if False:
+                yield None
+
+SilentMic.stopped = False
+cal._levels = real_levels      # the walk above stubbed it; this test needs the real one
+import erebus.pipeline.audio as real_audio   # noqa: E402  - imported lazily by _levels
+fake = types.SimpleNamespace(
+    AudioConfig=real_audio.AudioConfig, Microphone=SilentMic,
+    rms=lambda f: 0.0, AUDIO_AVAILABLE=True)
+# `from .pipeline import audio` reads the attribute on the package, not
+# sys.modules, so both have to be swapped for the stub to take effect.
+import erebus.pipeline   # noqa: E402
+
+sys.modules["erebus.pipeline.audio"] = fake
+erebus.pipeline.audio = fake
+
+started = time.monotonic()
+levels = asyncio.run(cal._levels(0.4))
+elapsed = time.monotonic() - started
+sys.modules["erebus.pipeline.audio"] = real_audio
+erebus.pipeline.audio = real_audio
+
+check("a silent device returns instead of hanging", elapsed < 5.0, f"{elapsed:.1f}s")
+check("and returns no levels rather than inventing them", levels == [])
+check("and the stream is closed on the way out", SilentMic.stopped)
 
 print("\nWRITING config.local.yaml")
 with tempfile.TemporaryDirectory() as tmp:

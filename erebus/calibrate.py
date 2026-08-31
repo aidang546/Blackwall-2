@@ -171,19 +171,33 @@ def settings_from(result: Result) -> dict:
 # --------------------------------------------------------------------------
 
 async def _levels(seconds: float, device=None, sample_rate: int = 16000) -> list[float]:
-    """Frame levels over a window, straight off the input."""
+    """Frame levels over a window, straight off the input.
+
+    The deadline is enforced from outside the loop as well as inside it.
+    `Microphone.frames()` yields nothing at all while its queue is empty, so a
+    device that opens successfully and then never fires its callback - which is
+    exactly what a muted or seized input does - would otherwise wedge this
+    forever. `_probe_devices` opens every input on the machine in turn, so one
+    such device is enough to hang the whole command with no output.
+    """
     from .pipeline import audio as audio_mod
 
     config = audio_mod.AudioConfig(sample_rate=sample_rate, device=device)
     mic = audio_mod.Microphone(config)
-    mic.start()
     out: list[float] = []
-    try:
+
+    async def collect() -> None:
         deadline = asyncio.get_running_loop().time() + seconds
         async for frame in mic.frames():
             out.append(audio_mod.rms(frame))
             if asyncio.get_running_loop().time() >= deadline:
-                break
+                return
+
+    mic.start()
+    try:
+        await asyncio.wait_for(collect(), timeout=seconds + 2.0)
+    except asyncio.TimeoutError:
+        log.debug("device %s opened but delivered %d frames", device, len(out))
     finally:
         mic.stop()
     return out
@@ -239,13 +253,28 @@ async def measure(config, speak) -> Result:
     result.settings["input_device"] = device
     print(f"  Using {names.get(device, device)} (input {device}).\n")
 
+    # Each capture is guarded: a device seized by another program, or unplugged
+    # halfway through, must not throw away the readings already taken.
+    async def capture(seconds: float, label: str) -> list[float] | None:
+        try:
+            return await _levels(seconds, device=device, sample_rate=sample_rate)
+        except Exception as exc:  # noqa: BLE001
+            result.warnings.append(
+                f"The microphone stopped working while measuring {label} "
+                f"({type(exc).__name__}: {exc}).")
+            return None
+
     _countdown("Stay quiet. Measuring the room.", 3)
-    quiet = await _levels(3.0, device=device, sample_rate=sample_rate)
+    quiet = await capture(3.0, "the room")
+    if quiet is None:
+        return result
     noise = result.add(Reading("room noise", percentile_rms(quiet, 0.9), len(quiet),
                                "90th percentile, so one noise does not set it"))
 
     _countdown('Now speak normally - say "Erebus, open the browser" a few times.', 3)
-    spoken = await _levels(5.0, device=device, sample_rate=sample_rate)
+    spoken = await capture(5.0, "your voice")
+    if spoken is None:
+        return result
     # The top third: the quiet gaps between words are not speech.
     speech = result.add(Reading("your voice", percentile_rms(spoken, 0.75), len(spoken)))
 
@@ -257,15 +286,30 @@ async def measure(config, speak) -> Result:
     print("  Stay quiet while it talks.\n")
     echo_task = asyncio.create_task(_levels(6.0, device=device, sample_rate=sample_rate))
     await asyncio.sleep(0.3)
+    spoke = True
     try:
         await speak("Measuring the echo path. This is what the microphone hears "
                     "when I speak, and it decides whether you can interrupt me.")
     except Exception as exc:  # noqa: BLE001
+        spoke = False
         result.warnings.append(f"Could not play audio for the echo test ({exc}).")
-    echo_frames = await echo_task
+    try:
+        echo_frames = await echo_task
+    except Exception as exc:  # noqa: BLE001
+        echo_frames = []
+        result.warnings.append(f"The echo measurement failed ({exc}).")
+
+    if not spoke or not echo_frames:
+        # Six seconds of silence would measure as a perfectly quiet echo path
+        # and write the most permissive barge-in setting there is - from a
+        # measurement that never happened. Leave it at the shipped default.
+        result.warnings.append(
+            "Barge-in was left alone: the echo path could not be measured, and "
+            "guessing it from silence is worse than the default.")
+        return result
+
     echo = result.add(Reading("its own voice, via the mic",
                               percentile_rms(echo_frames, 0.9), len(echo_frames)))
-
     barge, notes = derive_barge_in(gate, speech.rms, echo.rms)
     result.settings["barge_in"] = barge
     result.warnings += notes
