@@ -262,6 +262,19 @@ actions:
     security_status:
       phrases: ["security status", "opsec check", "are we secure",
                 "check the chain"]
+    remember:
+      # `takes: text` means the rest of the sentence is the argument, so
+      # "remember that I train on Tuesdays" stores the part after "that".
+      takes: text
+      phrases: ["remember that", "remember", "make a note that",
+                "make a note", "note that", "keep in mind that", "keep in mind"]
+    recall:
+      phrases: ["what do you know about me", "what do you remember",
+                "what have you learned", "what do you know"]
+    forget:
+      takes: text
+      phrases: ["forget about", "forget that", "forget",
+                "you are wrong about"]
     purge:
       phrases: ["purge the record", "burn it", "wipe everything"]
 

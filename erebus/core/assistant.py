@@ -14,6 +14,7 @@ import logging
 import time
 
 from ..actions.registry import Registry, has_launch_prefix, normalize
+from ..memory import Memory
 from ..briefing.compose import Briefer
 from ..opsec import actions as opsec_actions
 from ..opsec.audit import AuditLog
@@ -111,10 +112,19 @@ class Assistant:
         self.registry.register_builtin("resume_listening", self.resume_listening)
         self.registry.register_builtin("security_status", self.security_status)
         self.registry.register_builtin("purge", self.purge_record)
+        self.registry.register_builtin("remember", self.remember_fact)
+        self.registry.register_builtin("recall", self.recall)
+        self.registry.register_builtin("forget", self.forget_fact)
 
         self._pending_confirm: tuple | None = None
-        #: (options, deadline) while a "which one?" is unanswered.
+        #: (options, deadline, utterance) while a "which one?" is unanswered.
+        #: The utterance is kept so that answering it teaches the phrasing.
         self._pending_choice: tuple | None = None
+        self.memory = Memory()
+        # Kept so the persona can be rebuilt whenever memory changes, without
+        # the facts from one rebuild accumulating into the next.
+        self._base_persona = self.brain.persona
+        self._refresh_persona()
         self._busy = asyncio.Lock()
         self._tasks: list[asyncio.Task] = []
         self._voice_enabled = False
@@ -322,7 +332,7 @@ class Assistant:
 
         # An open question takes priority: the operator is answering it.
         if self._pending_choice is not None:
-            options, deadline = self._pending_choice
+            options, deadline, asked_about = self._pending_choice
             self._pending_choice = None
             if time.monotonic() <= deadline:
                 if any(word in text.lower() for word in CANCEL_WORDS):
@@ -331,10 +341,15 @@ class Assistant:
                 # A single suggestion was phrased as a yes/no question
                 # ("Spotify?"), so a bare yes has to answer it.
                 if len(options) == 1 and any(w in text.lower() for w in CONFIRM_YES):
+                    self.memory.learn_phrase(asked_about, options[0].name)
                     await self._execute(options[0], None)
                     return
                 chosen = self.registry.choose(text, options)
                 if chosen is not None:
+                    # This is the whole point of having asked: the operator has
+                    # just labelled their own wording. Next time there is no
+                    # question, because it is their vocabulary now.
+                    self.memory.learn_phrase(asked_about, chosen.name)
                     await self._execute(chosen, None)
                     return
                 # Not an answer to the question. Fall through and treat it as a
@@ -351,25 +366,34 @@ class Assistant:
                 await self.say("Cancelled.")
             return
 
-        # 1. Exact/deterministic match - no model in the path.
+        # 1. Something it was taught. Checked before the registry's own
+        #    matching so a correction actually sticks: the operator answered
+        #    "which one?" with this wording once, and that answer outranks a
+        #    guess at what the wording resembles.
+        learned = self.memory.phrase_for(text)
+        if learned and learned in self.registry.actions:
+            await self._execute(self.registry.actions[learned], None)
+            return
+
+        # 2. Exact/deterministic match - no model in the path.
         match = self.registry.match(text)
         if match is not None and (match.exact or match.score >= 6):
             await self._execute(match.action, match.value)
             return
 
-        # 2. Asked to open something, without saying what. Guessing which
+        # 3. Asked to open something, without saying what. Guessing which
         #    application someone meant is the one place this should ask.
         if self.registry.launch_intent(text):
-            await self._ask_which(self.registry.candidates(text))
+            await self._ask_which(self.registry.candidates(text), text)
             return
 
-        # 3. Loose phrasing - let the router look at it.
+        # 4. Loose phrasing - let the router look at it.
         decision: Decision = await self.brain.route(text, self.registry.catalog)
         if decision.kind == "action" and decision.action in self.registry.actions:
             await self._execute(self.registry.actions[decision.action], decision.value)
             return
 
-        # 4. It was phrased as a request to open something, and nothing has
+        # 5. It was phrased as a request to open something, and nothing has
         #    resolved it. Offer what it could have been rather than either
         #    guessing or dropping into conversation about it. The launch-prefix
         #    test is what keeps this out of ordinary chat: "open the music
@@ -377,10 +401,10 @@ class Assistant:
         if has_launch_prefix(normalize(text)):
             options = self.registry.candidates(text)
             if options:
-                await self._ask_which(options)
+                await self._ask_which(options, text)
                 return
 
-        # 5. Not a command. Talk.
+        # 6. Not a command. Talk.
         if self.brain.ready:
             await self.say_stream(self.brain.converse_stream(text))
             return
@@ -389,7 +413,40 @@ class Assistant:
             return
         await self.say("I have no action for that, and no reasoning core to improvise.")
 
-    async def _ask_which(self, options: list) -> None:
+    async def remember_fact(self, text: str = "") -> str:
+        """Told something outright: "remember that I train on Tuesdays"."""
+        stored = self.memory.remember(text)
+        if not stored:
+            return "Tell me what to remember."
+        self.audit.record("memory.learn", chars=len(stored))
+        self._refresh_persona()
+        return "Held."
+
+    async def recall(self) -> str:
+        """What it thinks it knows, so a wrong belief can be found and removed."""
+        return self.memory.summary()
+
+    async def forget_fact(self, text: str = "") -> str:
+        if not text.strip():
+            self.brain.forget()
+            return "Conversation cleared."
+        dropped = self.memory.forget(text)
+        self._refresh_persona()
+        if not dropped:
+            return "I have nothing matching that."
+        self.audit.record("memory.forget", count=dropped)
+        return f"Dropped {dropped}."
+
+    def _refresh_persona(self) -> None:
+        """Fold what it knows back into the system prompt.
+
+        Facts belong in the persona rather than in the conversation, so they
+        survive `forget` and a restart, and so the model treats them as things
+        it knows rather than things it was just told.
+        """
+        self.brain.persona = (self._base_persona + self.memory.prompt_block()).strip()
+
+    async def _ask_which(self, options: list, asked_about: str = "") -> None:
         """Name the choices and wait for one.
 
         Only ever the registry's own actions, so answering this cannot reach
@@ -400,13 +457,15 @@ class Assistant:
             await self.say("Nothing in the registry matches that.")
             return
         if len(options) == 1:
-            self._pending_choice = (options, time.monotonic() + CHOICE_TIMEOUT)
+            self._pending_choice = (options, time.monotonic() + CHOICE_TIMEOUT,
+                                    asked_about)
             await self.say(f"{options[0].spoken.capitalize()}?")
             return
 
         named = [a.spoken for a in options]
         spoken = ", ".join(named[:-1]) + ", or " + named[-1]
-        self._pending_choice = (options, time.monotonic() + CHOICE_TIMEOUT)
+        self._pending_choice = (options, time.monotonic() + CHOICE_TIMEOUT,
+                                asked_about)
         await self.bus.publish("choices", options=[a.name for a in options])
         await self.say(f"Which. {spoken}.")
 

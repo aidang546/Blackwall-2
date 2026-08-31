@@ -242,6 +242,44 @@ __wall.ping();          // the travelling pulse that fires on an action
 
 ## Voice and persona
 
+### It remembers
+
+Two kinds of memory, arriving two different ways, both surviving a restart.
+
+**It learns your wording by being corrected.** Every question it asks is a
+labelled example - you answer once, and that phrasing is yours from then on:
+
+```
+you   open the music thing
+it    Spotify?
+you   yes
+      -> opens Spotify, and never asks about that wording again
+```
+
+A bare "open" is deliberately never learned. Answering it once does not mean
+"open" is Spotify forever; it means you answered that question that time.
+
+**It holds what you tell it.**
+
+```
+you   remember that I train on Tuesdays and Thursdays
+it    Held.
+you   what do you know about me
+it    1. I train on Tuesdays and Thursdays...
+you   forget about Tuesdays
+it    Dropped 1.
+```
+
+Facts go into the system prompt rather than the chat history, so it knows them
+the way it knows its persona - they survive clearing the conversation, and it
+does not have to be reminded. Your words are stored as you said them, casing
+and all.
+
+Both live in `memory.local.jsonl`, append-only and gitignored. Forgetting is
+recorded as an event rather than by deleting a line: a store you can quietly
+revise cannot be trusted to tell you what it thinks it knows. And it can always
+be asked - a wrong belief is findable and removable out loud.
+
 ### It asks rather than guessing
 
 You do not have to know the vocabulary. An unfinished request gets a question:

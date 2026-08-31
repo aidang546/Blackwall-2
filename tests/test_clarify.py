@@ -29,6 +29,14 @@ from erebus.actions.registry import (          # noqa: E402
 from erebus.core.assistant import Assistant     # noqa: E402
 from erebus.core.bus import EventBus            # noqa: E402
 from erebus.core.config import Config           # noqa: E402
+from erebus import memory as mem_mod            # noqa: E402
+
+# These exchanges teach it things. Without a scratch store they would write to
+# the real memory file, and a phrase learned by one test would change what a
+# later one sees.
+import tempfile                                 # noqa: E402
+
+mem_mod.MEMORY_PATH = pathlib.Path(tempfile.mkdtemp()) / "memory.jsonl"
 
 PASSED = FAILED = 0
 
@@ -152,6 +160,9 @@ async def exchanges():
           spoken.strip().endswith("?") and not ran, spoken)
     spoken, ran = await h.turn("yes")
     check("which a yes answers", ran == ["spotify"], str(ran))
+    spoken, ran = await h.turn("open the music thing")
+    check("and that wording is learned, so it is not asked twice",
+          ran == ["spotify"] and "?" not in spoken, spoken or str(ran))
 
     spoken, ran = await h.turn("open spotify")
     check("an unambiguous command still just runs", ran == ["spotify"], str(ran))
@@ -161,7 +172,8 @@ async def exchanges():
 
     # An unanswered question must not linger and catch a later stray word.
     await h.turn("open")
-    h.a._pending_choice = (h.a._pending_choice[0], 0.0)      # expire it
+    _options, _, _asked = h.a._pending_choice
+    h.a._pending_choice = (_options, 0.0, _asked)           # expire it
     spoken, ran = await h.turn("steam")
     check("an expired question does not swallow the next utterance",
           ran == ["steam"], "matched normally, not as an answer")

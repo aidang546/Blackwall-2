@@ -25,6 +25,7 @@ models/
 profile.local.yaml
 journal.local.jsonl
 health.local.jsonl
+memory.local.jsonl
 audit.local.jsonl
 
 # Vault key. Machine-bound, but it is still a key.

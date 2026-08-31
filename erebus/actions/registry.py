@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import inspect
 import logging
 import re
 import subprocess
@@ -91,6 +92,20 @@ def is_bare_launch_verb(text: str) -> bool:
     stripped and unstripped forms and therefore never fired at all.
     """
     return bool(text) and any(text == prefix.strip() for prefix in LAUNCH_PREFIXES)
+
+
+def _drop_leading_words(raw: str, count: int) -> str:
+    """Remove the first `count` words from the original text, keeping the rest
+    exactly as it was written - casing, punctuation and all."""
+    if count <= 0:
+        return raw.strip()
+    remainder = raw.strip()
+    for _ in range(count):
+        parts = remainder.split(None, 1)
+        if len(parts) < 2:
+            return ""
+        remainder = parts[1]
+    return remainder.strip()
 
 
 def _ordinal(text: str) -> int | None:
@@ -258,6 +273,23 @@ class Registry:
 
         best: Match | None = None
         for action in self.actions.values():
+            # An action declared `takes: text` is a prefix carrying the rest of
+            # the sentence as its argument - "remember that I train on
+            # Tuesdays". The coverage rule below would reject those: the longer
+            # the thing to remember, the smaller a fraction the command is, so
+            # the more certainly it was a command the less it looked like one.
+            if action.spec.get("takes") == "text":
+                carried = self._trailing_value(text, action.phrases)
+                if carried is not None:
+                    # Taken from the raw utterance, not the normalised one:
+                    # a remembered fact should read back the way it was said,
+                    # not as "i train on tuesdays and thursdays".
+                    raw = _drop_leading_words(utterance, len(text.split()) - len(carried.split()))
+                    score = len(text) + 50
+                    if best is None or score > best.score:
+                        best = Match(action, (raw or carried) or None, score, True)
+                continue
+
             for phrase in action.phrases:
                 if not phrase:
                     continue
@@ -370,6 +402,24 @@ class Registry:
                     best, best_ratio = action, ratio
         return best if best_ratio >= CHOICE_THRESHOLD else None
 
+    @staticmethod
+    def _trailing_value(text: str, phrases: list[str]) -> str | None:
+        """The rest of the sentence after a prefix phrase, or None.
+
+        The longest matching phrase wins, so "remember that" beats "remember"
+        and the stored fact does not begin with the word "that".
+        """
+        best: str | None = None
+        for phrase in sorted(phrases, key=len, reverse=True):
+            if not phrase:
+                continue
+            if text == phrase:
+                return ""
+            if text.startswith(phrase + " "):
+                if best is None:
+                    best = text[len(phrase) + 1:].strip()
+        return best
+
     def _fuzzy_match(self, text: str) -> Match | None:
         """Catch near-misses from speech recognition.
 
@@ -435,14 +485,23 @@ class Registry:
         if action.kind == "macro":
             return await self._run_macro(action, say)
         if action.kind == "builtin":
-            return await self._run_builtin(action)
+            return await self._run_builtin(action, value)
         return ""
 
-    async def _run_builtin(self, action: Action) -> str:
+    async def _run_builtin(self, action: Action, value: str | None = None) -> str:
+        """Call the handler, passing a value only to handlers that take one.
+
+        Most builtins are verbs with no object ("brief me"), but a few carry
+        the rest of the sentence - "remember that I train on Tuesdays" is
+        useless without the part after "that". Handlers declare which they are
+        by their signature rather than by a registry flag.
+        """
         handler = self._builtins.get(action.name)
         if handler is None:
             return f"{action.label} is not wired up."
         try:
+            if inspect.signature(handler).parameters:
+                return await handler(value or "")
             return await handler()
         except Exception as exc:  # noqa: BLE001
             log.exception("builtin %s failed", action.name)
