@@ -242,6 +242,30 @@ __wall.ping();          // the travelling pulse that fires on an action
 
 ## Voice and persona
 
+### Reaching it
+
+`ctrl+alt+space` from any window: tap, speak, done. `ctrl+alt+x` stops it
+talking. Both are registered with Windows itself, so they work from inside a
+game or an editor — unlike the wall's space bar, which needs its window
+focused.
+
+The wake word is **not** "Erebus". openWakeWord ships no model for it, and
+measured against all six stock models the word scores 0.000 — see
+[docs/WAKEWORD.md](docs/WAKEWORD.md) for the numbers and for training a real
+one. Until then, use the hotkey.
+
+### Calibration
+
+```
+python -m erebus calibrate
+```
+
+Three settings are properties of your room rather than preferences: the noise
+floor, your speaking level, and how much of Erebus's own voice returns through
+the microphone. This measures all three — including talking to itself to find
+the echo path — and writes `config.local.yaml`. It prints what it measured
+next to what it concluded, so a wrong number is visible rather than mysterious.
+
 `brain.persona` is the system prompt — cold, terse, no filler. Rewrite it to
 taste.
 

@@ -211,7 +211,9 @@ def cmd_brief(config: Config, out: str | None, observe: str | None) -> int:
 
             speaker = Speaker(
                 backend=config.get("tts.backend", "piper"),
-                voice=config.get("tts.voice"),
+                # `or` not `get(..., default)`: a key present but null in YAML would
+        # otherwise pass None straight through and break the load.
+        voice=config.get("tts.voice") or "en_GB-alan-medium",
                 effects=config.section("tts").get("effects", {}),
                 rate=config.get("tts.rate", 1.0),
             )
@@ -404,6 +406,60 @@ def cmd_pair(config: Config) -> int:
     return 0
 
 
+async def cmd_calibrate(config, write: bool = True) -> int:
+    """Measure the room, then write the three settings that depend on it."""
+    from . import calibrate as cal
+    from .pipeline import audio as audio_mod
+
+    print(BANNER)
+    print("  Measuring your microphone, your room and your speakers.")
+    print("  Takes about half a minute. Nothing is written until the end.\n")
+
+    if not audio_mod.AUDIO_AVAILABLE:
+        print("  No audio support - install it first:")
+        print("    pip install -r requirements-voice.txt\n")
+        return 2
+
+    speaker = _calibration_speaker(config)
+    result = await cal.measure(config, speaker)
+    cal.report(result)
+
+    settings = cal.settings_from(result)
+    if not settings.get("audio"):
+        print("\n  Nothing measured, so nothing written.\n")
+        return 1
+    if not write:
+        print("\n  --dry: not written. Drop --dry to save these.\n")
+        return 0
+    try:
+        path = cal.write_local(settings)
+    except RuntimeError as exc:
+        print(f"\n  ! {exc}\n")
+        return 2
+    print(f"\n  Written to {path}. Restart Erebus to pick it up.\n")
+    return 0
+
+
+def _calibration_speaker(config):
+    """An async 'say this out loud', or a no-op that explains itself."""
+    from .pipeline.tts import Speaker
+
+    speaker = Speaker(
+        backend=config.get("tts.backend", "piper"),
+        # `or` not `get(..., default)`: a key present but null in YAML would
+        # otherwise pass None straight through and break the load.
+        voice=config.get("tts.voice") or "en_GB-alan-medium",
+        effects=config.section("tts").get("effects", {}),
+        rate=float(config.get("tts.rate", 1.0)),
+        device=config.get("audio.output_device"),
+    )
+    if not speaker.load():
+        async def unavailable(text: str) -> None:
+            raise RuntimeError("no voice installed, so the echo path is unmeasured")
+        return unavailable
+    return speaker.speak
+
+
 # --------------------------------------------------------------------------
 #  Main run loop
 # --------------------------------------------------------------------------
@@ -435,13 +491,18 @@ async def run(config: Config, no_voice: bool, open_ui: bool) -> None:
             break
         await asyncio.sleep(0.05)
 
+    hotkeys = _bind_hotkeys(config, assistant, bus)
+
     local_url = f"http://127.0.0.1:{port}/"
     print(BANNER)
     print(f"  wall     {local_url}")
     if host != "127.0.0.1":
         print(f"  phone    http://{lan_address()}:{port}/#token={config.resolve_token()}")
-    print(f"  wake     {', '.join(config.get('identity.wake_words', []))}")
-    print("  keys     [space] push to talk   [esc] interrupt   [ctrl-c] quit\n")
+    print(f"  wake     {_wake_summary(config)}")
+    if hotkeys.active:
+        print(f"  hotkey   {'   '.join(hotkeys.active)}  (works from any window)")
+    print("  wall     [space] push to talk   [esc] interrupt")
+    print("  console  [ctrl-c] quit\n")
 
     if open_ui:
         threading.Thread(target=lambda: (time.sleep(0.4), open_window(local_url)),
@@ -464,7 +525,52 @@ async def run(config: Config, no_voice: bool, open_ui: bool) -> None:
             server.should_exit = True
         await server_task
     finally:
+        hotkeys.stop()
         await assistant.stop()
+
+
+def _wake_summary(config) -> str:
+    """Say what the wake word actually is, not what we wish it were.
+
+    openWakeWord has no "erebus" model. Measured against every stock model it
+    ships, the word scores 0.000 - so a config that lists "erebus" as the wake
+    word is describing something that cannot happen. Until a custom model is
+    trained, the truth is the stock model's own phrase.
+    """
+    if not config.get("wake.enabled", True):
+        return "off - use the hotkey or the wall"
+    model = str(config.get("wake.model", ""))
+    spoken = model.replace("_", " ")
+    return f'say "{spoken}" (stock model standing in - see docs/WAKEWORD.md)'
+
+
+def _bind_hotkeys(config, assistant, bus):
+    """System-wide keys, if this platform and this config allow them."""
+    from .hotkey import Hotkeys, HotkeyError
+
+    keys = Hotkeys(asyncio.get_running_loop())
+    if not config.get("hotkey.enabled", True):
+        return keys
+
+    def talk() -> None:
+        asyncio.create_task(assistant.take_turn())
+
+    def interrupt() -> None:
+        assistant.interrupt()
+        bus.publish_soon("notice", text="Stopped.")
+
+    for setting, handler in (("hotkey.talk", talk), ("hotkey.interrupt", interrupt)):
+        combo = config.get(setting)
+        if not combo:
+            continue
+        try:
+            keys.bind(combo, handler)
+        except HotkeyError as exc:
+            # A typo here is otherwise silent, and a hotkey that does not exist
+            # is indistinguishable from one that is broken.
+            print(f"  ! {setting}: {exc}")
+    keys.start()
+    return keys
 
 
 async def _watch_replay(bus, queue) -> None:
@@ -522,7 +628,7 @@ def main(argv: list[str] | None = None) -> int:
                                  "voices", "fetch-voice", "brief",
                                  "archive", "examine", "domain", "cases",
                                  "audit", "security", "vault", "rotate-token",
-                                 "doctor"])
+                                 "doctor", "calibrate"])
     parser.add_argument("text", nargs="*",
                         help="text for `say`, or a voice name for `fetch-voice`")
     parser.add_argument("--out", metavar="FILE",
@@ -578,6 +684,8 @@ def main(argv: list[str] | None = None) -> int:
         from . import doctor
 
         return asyncio.run(doctor.run(config))
+    if args.command == "calibrate":
+        return asyncio.run(cmd_calibrate(config, write=not args.dry))
     if args.command == "archive":
         if not args.text:
             print("usage: python -m erebus archive https://example.com [--case name]")

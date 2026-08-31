@@ -31,6 +31,19 @@ audio:
     # How long that level must hold, in seconds. A cough is not an interruption.
     sustain: 0.35
 
+# A key that reaches Erebus from inside whatever else you are doing. The wall
+# has push-to-talk on the space bar, but only while its window has focus -
+# which is the moment you do not need it. This one is registered with the
+# operating system, so it works from a game, an editor, anything.
+#
+# It is a tap, not a hold: tap, speak, and the silence gate ends the turn.
+# Windows only. Pick a combo nothing else owns - if something already has it,
+# the startup log says so rather than failing silently.
+hotkey:
+  enabled: true
+  talk: "ctrl+alt+space"
+  interrupt: "ctrl+alt+x"
+
 wake:
   enabled: true
   # openWakeWord ships pretrained models; "erebus" is not one of them, so until

@@ -85,6 +85,12 @@ audio:
   input_device: 3        # the index from the list above
 ```
 
+You do not have to guess, though. Step 7 listens on every input and picks the
+one that actually hears you, which is usually not the default: most machines
+have two or three inputs that are silent — a disabled line-in, a webcam nobody
+is pointing at, a virtual cable — and the symptom of picking one is that Erebus
+never hears anything, with no error anywhere.
+
 ---
 
 ## 5. A voice for it
@@ -153,7 +159,48 @@ curl.exe http://127.0.0.1:11434/api/tags
 
 ---
 
-## 7. Run it
+## 7. Calibrate
+
+```powershell
+python -m erebus calibrate
+```
+
+Three settings in `config.yaml` are not preferences, they are properties of
+your room: how loud the silence is, how loud you are, and how much of Erebus's
+own voice comes back through the microphone. The shipped values are guesses
+about someone else's room, and getting them wrong is what turns a first run
+into an evening of nudging numbers — it wakes at nothing, or cuts you off
+mid-sentence, or interrupts itself.
+
+This measures them instead. Half a minute: it listens on every input to find
+the one actually connected, records the room, records you, then talks while
+listening to itself to measure the echo path. It prints what it measured and
+what it concluded, then writes `config.local.yaml`.
+
+```
+  measured
+    room noise                   0.0038   38 frames   90th percentile
+    your voice                   0.0910   62 frames
+    its own voice, via the mic   0.0204   75 frames
+
+    signal to noise              23.9x   (4x is the minimum worth tuning)
+
+  concluded
+    audio.input_device           1
+    audio.silence_threshold      0.0095
+    audio.barge_in               {'threshold_multiplier': 3.5}
+```
+
+`--dry` measures without writing. Re-run it whenever you move the microphone,
+change speakers, or move the machine to a different room.
+
+If it tells you the echo path is unwinnable, believe it — on speakers, at some
+volume, nothing can tell your voice apart from its own. Headphones fix it
+completely, and turning the output down helps more than any setting.
+
+---
+
+## 8. Run it
 
 ```powershell
 python -m erebus
@@ -169,7 +216,29 @@ Any that are false are also shown in the bottom-left of the wall, greyed out.
 
 ---
 
-## 8. Autostart
+## 9. Reaching it
+
+The wall has push-to-talk on the space bar — but only while its window has
+focus, which is the moment you least need it. The hotkey is registered with
+Windows itself, so it works from inside a game, an editor, anything:
+
+| key | does |
+|---|---|
+| `ctrl+alt+space` | tap, then speak. The silence gate ends the turn. |
+| `ctrl+alt+x` | stop it talking |
+
+Change them under `hotkey:` in `config.local.yaml`. A combo another program
+already owns is reported at startup rather than failing silently.
+
+**The wake word is not "Erebus".** openWakeWord has no model for it, and every
+stock model scores exactly 0.000 on the word — see
+[WAKEWORD.md](WAKEWORD.md) for the measurements and for training a real one.
+Until then the hotkey is the reliable path, and `wake.model` is whatever stock
+phrase you have configured.
+
+---
+
+## 10. Autostart
 
 Task Scheduler, so it survives reboots and starts before you log in to
 anything else.
@@ -188,7 +257,7 @@ Register-ScheduledTask -TaskName "Erebus" -Action $action -Trigger $trigger `
 
 ---
 
-## 9. Your phone
+## 11. Your phone
 
 ```powershell
 python -m erebus pair

@@ -14,6 +14,56 @@ recording — the training set is synthetic.
 
 ---
 
+## What "stand-in" actually costs, measured
+
+It is worse than a compromise. Every stock model was run against "Erebus"
+spoken by four different synthetic voices at three speaking rates:
+
+| model | scores on "Erebus" | scores on other speech |
+|---|---|---|
+| `hey_jarvis` | **0.000** | 0.000 |
+| `hey_mycroft` | 0.000 | 0.000 |
+| `alexa` | 0.000 | 1.000 (on "Alexa, play some music") |
+| `hey_rhasspy` | 0.004 | 0.003 |
+
+Not "less reliable" — zero. Saying "Erebus" at it does nothing at all. Until a
+real model exists the wake word is literally `hey jarvis`, and `doctor` now
+says so rather than reporting that models are installed.
+
+**Use the hotkey instead.** `ctrl+alt+space` reaches Erebus from inside any
+window, with no false alarms and no training. It is configured under `hotkey:`
+and is the recommended way to run until you have trained a model.
+
+### Why not train one from here
+
+It was attempted, and it failed in a way worth recording. Roughly 1,200
+positives were synthesised from four Piper voices, augmented across pitch,
+formant, band-limiting, reverb and noise, against 1,100 negatives that included
+deliberate near-misses — *Cerberus*, *aerobics*, *her office*, *every bus*.
+
+Held out one voice at a time, so the model was scored on a speaker it had never
+trained on:
+
+```
+held out alan      AUC 0.911
+held out northern  AUC 0.888
+held out lessac    AUC 0.914
+held out jenny     AUC 0.817
+```
+
+AUC 0.9 sounds respectable and is nowhere near enough. A wake word runs about
+45,000 windows an hour, so it needs a false-alarm rate near one in 10⁵ — the
+useful figure is recall at zero false alarms, and that came out at 0–12%.
+Aligning the phrase to the window edge did not move it. Neither did handing the
+model 40 clips of the held-out voice, as though the user had recorded
+themselves at setup.
+
+The limit is voice diversity, not the recipe. Four TTS voices cannot stand in
+for the range of people and rooms a wake word has to survive. The notebook
+below uses hundreds, which is exactly why it works and this did not.
+
+---
+
 ## The short version
 
 openWakeWord's own notebook does the whole thing: it synthesises a few thousand

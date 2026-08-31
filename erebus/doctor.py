@@ -200,7 +200,7 @@ def check_tts() -> list[Check]:
     return out
 
 
-def check_wake() -> Check:
+def check_wake(config) -> Check:
     from .pipeline.wake import WAKE_AVAILABLE
 
     if not WAKE_AVAILABLE:
@@ -214,7 +214,46 @@ def check_wake() -> Check:
     if not onnx:
         return Check("wake word", WARN, "models not downloaded yet",
                      "Erebus fetches them automatically on first run.")
-    return Check("wake word", PASS, f"{len(onnx)} models available")
+    # "N models available" is true and useless. What matters is which word
+    # actually wakes it, and that is not the one in identity.name: openWakeWord
+    # ships no "erebus" model, and measured against all six stock models the
+    # word scores 0.000. Report the phrase the loaded model was trained on.
+    if not config.get("wake.enabled", True):
+        return Check("wake word", WARN, "disabled - hotkey and wall only",
+                     "That is a valid setup. wake.enabled: true to turn it on.")
+    model = str(config.get("wake.model", "hey_jarvis"))
+    if not any(model in f.name for f in onnx):
+        return Check("wake word", FAIL, f"{model!r} is not one of the installed models",
+                     f"Installed: {', '.join(sorted(f.stem for f in onnx))}")
+    spoken = model.replace("_", " ")
+    return Check("wake word", WARN, f'responds to "{spoken}", not to "Erebus"',
+                 "No stock model matches the name and four synthetic voices were "
+                 "not enough to train one - see docs/WAKEWORD.md. Use the hotkey.")
+
+
+def check_hotkey(config) -> Check:
+    """The system-wide key is the one input path that does not depend on luck."""
+    from .hotkey import IS_WINDOWS, HotkeyError, parse
+
+    if not config.get("hotkey.enabled", True):
+        return Check("hotkey", WARN, "disabled",
+                     "hotkey.enabled: true gives you a key that works from any window.")
+    combos = [(k, config.get(f"hotkey.{k}")) for k in ("talk", "interrupt")]
+    combos = [(k, v) for k, v in combos if v]
+    if not combos:
+        return Check("hotkey", WARN, "none configured",
+                     'Set hotkey.talk, e.g. "ctrl+alt+space".')
+    for name, combo in combos:
+        try:
+            parse(combo)
+        except HotkeyError as exc:
+            return Check("hotkey", FAIL, f"hotkey.{name}: {exc}",
+                         'Something like "ctrl+alt+space".')
+    listed = ", ".join(v for _, v in combos)
+    if not IS_WINDOWS:
+        return Check("hotkey", WARN, f"{listed} - Windows only, inert here",
+                     "Registers for real on the target machine.")
+    return Check("hotkey", PASS, listed)
 
 
 async def check_brain(config) -> list[Check]:
@@ -346,7 +385,8 @@ async def run(config=None) -> int:
     checks += await _guarded("microphone", lambda: check_microphone(config))
     checks += await _guarded("speech in", check_stt)
     checks += await _guarded("speech out", check_tts)
-    checks += await _guarded("wake word", check_wake)
+    checks += await _guarded("wake word", lambda: check_wake(config))
+    checks += await _guarded("hotkey", lambda: check_hotkey(config))
     checks += await _guarded("brain", lambda: check_brain(config))
     checks += await _guarded("vault", lambda: check_vault(config))
     checks += await _guarded("profile", check_profile)
