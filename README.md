@@ -242,6 +242,32 @@ __wall.ping();          // the travelling pulse that fires on an action
 
 ## Voice and persona
 
+### It asks rather than guessing
+
+You do not have to know the vocabulary. An unfinished request gets a question:
+
+```
+you   open
+it    Which. Spotify, browser, vs code, explorer, terminal, or steam.
+you   the second one
+      -> launches the browser
+```
+
+Half a request works too — "open the music thing" gets *"Spotify?"*, and a yes
+runs it. So does "start the game", and "open something to write code".
+
+Answers can be the name, an alias it was read out under, a position ("the
+second one", "three", "last"), or "never mind". Saying something else entirely
+is treated as a new command rather than a wrong answer, and an unanswered
+question expires after 45 seconds so a stray word later does not launch
+anything.
+
+The important part is what this does *not* change: the choices only ever come
+from your registry. Answering a question cannot reach an action you have not
+configured, exactly as the model cannot compose one. And it stays out of
+ordinary conversation — "open the music thing" gets a question, "what is the
+weather" gets an answer.
+
 ### Reaching it
 
 `ctrl+alt+space` from any window: tap, speak, done. `ctrl+alt+x` stops it

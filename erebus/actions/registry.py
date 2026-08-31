@@ -47,6 +47,59 @@ FUZZY_THRESHOLD = 0.80      # similarity floor ("coming mode" -> "gaming mode")
 FUZZY_MIN_LENGTH = 7        # shortest phrase eligible, in characters
 FUZZY_LENGTH_RATIO = 0.75   # the two strings must be comparable in length
 
+#: Suggesting is cheaper than acting, so both of these sit below
+#: FUZZY_THRESHOLD: a wrong suggestion costs one word of conversation, a wrong
+#: action costs whatever the action does.
+CANDIDATE_THRESHOLD = 0.30  # loose enough to offer as "did you mean"
+CHOICE_THRESHOLD = 0.55     # answering "which one" from a list already read out
+
+#: Words that carry no identifying weight when comparing an utterance to a
+#: phrase. Without these, "the" alone can make two unrelated phrases overlap.
+STOPWORDS = frozenset({
+    "the", "a", "an", "my", "some", "that", "this", "it", "thing", "one",
+    "to", "for", "of", "on", "up", "please", "now",
+})
+
+#: Spoken positions, for answering "the second one".
+ORDINALS = {
+    "first": 0, "one": 0, "1": 0,
+    "second": 1, "two": 1, "2": 1,
+    "third": 2, "three": 2, "3": 2,
+    "fourth": 3, "four": 3, "4": 3,
+    "fifth": 4, "five": 4, "5": 4,
+    "sixth": 5, "six": 5, "6": 5,
+    "last": -1,
+}
+
+
+def has_launch_prefix(text: str) -> bool:
+    """Does this open with a verb that means "start something"?
+
+    Used to decide when an unmatched utterance is worth asking about. Without
+    it, offering "did you mean" on anything with a loose candidate would
+    hijack ordinary conversation.
+    """
+    return any(text.startswith(prefix) for prefix in LAUNCH_PREFIXES)
+
+
+def is_bare_launch_verb(text: str) -> bool:
+    """Is this only a launch verb, with nothing after it?
+
+    The prefixes carry a trailing space so they only strip when something
+    follows, which means a bare "open" is untouched by strip_prefixes and has
+    to be recognised separately - the first version of this test compared the
+    stripped and unstripped forms and therefore never fired at all.
+    """
+    return bool(text) and any(text == prefix.strip() for prefix in LAUNCH_PREFIXES)
+
+
+def _ordinal(text: str) -> int | None:
+    words = text.split()
+    for word in words:
+        if word in ORDINALS and len(words) <= 4:
+            return ORDINALS[word]
+    return None
+
 
 def normalize(text: str) -> str:
     """Lowercase, strip punctuation, collapse whitespace."""
@@ -107,6 +160,16 @@ class Action:
     @property
     def label(self) -> str:
         return self.name.replace("_", " ")
+
+    @property
+    def spoken(self) -> str:
+        """What to call this out loud.
+
+        The first configured phrase, because that is what the operator already
+        says - reading the internal name back gives "vscode" where they said
+        "vs code", and "prev track" where they said "previous track".
+        """
+        return self.phrases[0] if self.phrases else self.label
 
 
 @dataclass
@@ -226,6 +289,86 @@ class Registry:
                 return None   # "volume to" with no number is not a command yet
             best.value = number.group(1)
         return best
+
+    def launch_intent(self, utterance: str) -> bool:
+        """Did they ask to open something without saying what?
+
+        "Open." "Launch." "Put on." A request with its object missing - and
+        guessing which application someone meant is the one place this should
+        ask rather than pick.
+        """
+        return is_bare_launch_verb(normalize(utterance))
+
+    def candidates(self, utterance: str, limit: int = 6) -> list[Action]:
+        """What they might have meant, when nothing matched cleanly.
+
+        Only ever drawn from the registry, never composed - the same rule that
+        governs everything else here. Asking "which of these" cannot introduce
+        an action that was not already configured.
+        """
+        normalized = normalize(utterance)
+        if is_bare_launch_verb(normalized):
+            # "Open." with no object: offer the things that are opened.
+            return [a for a in self.actions.values()
+                    if a.kind in ("app", "macro")][:limit]
+
+        text = strip_prefixes(normalized)
+        words = {w for w in text.split() if w not in STOPWORDS}
+        if not words:
+            return []
+
+        scored: list[tuple[float, Action]] = []
+        for action in self.actions.values():
+            best = 0.0
+            for phrase in [*action.phrases, action.name.replace("_", " ")]:
+                if not phrase:
+                    continue
+                # Shared words carry this, not string similarity. On a phrase
+                # of a few words, difflib scores "briefing" against "the music
+                # thing" about as highly as it scores "music app" - which is
+                # how the first version came to suggest a status report when
+                # asked for something to play.
+                phrase_words = {w for w in phrase.split() if w not in STOPWORDS}
+                if not phrase_words:
+                    continue
+                overlap = len(words & phrase_words) / len(words | phrase_words)
+                ratio = difflib.SequenceMatcher(None, text, phrase).ratio()
+                best = max(best, overlap + ratio * 0.2)
+            if best >= CANDIDATE_THRESHOLD:
+                scored.append((best, action))
+
+        scored.sort(key=lambda pair: -pair[0])
+        return [action for _, action in scored[:limit]]
+
+    def choose(self, utterance: str, options: list[Action]) -> Action | None:
+        """Resolve an answer to "which one?" against the offered options only.
+
+        The bar is lower than normal matching because the field is already
+        narrowed to a handful the operator has just been read out - but it is
+        still a selection from a fixed list, never a free-text command.
+        """
+        text = strip_prefixes(normalize(utterance))
+        if not text or not options:
+            return None
+
+        # "the first one", "second", "number three"
+        ordinal = _ordinal(text)
+        # "last" is -1, and Python indexes that correctly - a bounds check of
+        # `0 <= ordinal` silently rejected it.
+        if ordinal is not None and -len(options) <= ordinal < len(options):
+            return options[ordinal]
+
+        best, best_ratio = None, 0.0
+        for action in options:
+            for phrase in [*action.phrases, action.name.replace("_", " ")]:
+                if not phrase:
+                    continue
+                if text == phrase or text in phrase.split():
+                    return action
+                ratio = difflib.SequenceMatcher(None, text, phrase).ratio()
+                if ratio > best_ratio:
+                    best, best_ratio = action, ratio
+        return best if best_ratio >= CHOICE_THRESHOLD else None
 
     def _fuzzy_match(self, text: str) -> Match | None:
         """Catch near-misses from speech recognition.

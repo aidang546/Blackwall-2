@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
-from ..actions.registry import Registry
+from ..actions.registry import Registry, has_launch_prefix, normalize
 from ..briefing.compose import Briefer
 from ..opsec import actions as opsec_actions
 from ..opsec.audit import AuditLog
@@ -30,6 +31,14 @@ from .state import State
 log = logging.getLogger("erebus.assistant")
 
 CONFIRM_YES = {"yes", "confirm", "do it", "affirmative", "go ahead", "yeah", "proceed"}
+
+#: Answers that mean "drop the question I just asked".
+CANCEL_WORDS = {"cancel", "never mind", "nevermind", "nothing", "forget it",
+                "no", "stop"}
+
+#: How long an unanswered "which one?" stays open. Long enough to think about,
+#: short enough that a stray word an hour later does not launch something.
+CHOICE_TIMEOUT = 45.0
 
 
 class Assistant:
@@ -104,6 +113,8 @@ class Assistant:
         self.registry.register_builtin("purge", self.purge_record)
 
         self._pending_confirm: tuple | None = None
+        #: (options, deadline) while a "which one?" is unanswered.
+        self._pending_choice: tuple | None = None
         self._busy = asyncio.Lock()
         self._tasks: list[asyncio.Task] = []
         self._voice_enabled = False
@@ -309,6 +320,26 @@ class Assistant:
     async def _handle(self, text: str) -> None:
         await self.bus.set_state(State.THINKING)
 
+        # An open question takes priority: the operator is answering it.
+        if self._pending_choice is not None:
+            options, deadline = self._pending_choice
+            self._pending_choice = None
+            if time.monotonic() <= deadline:
+                if any(word in text.lower() for word in CANCEL_WORDS):
+                    await self.say("Dropped.")
+                    return
+                # A single suggestion was phrased as a yes/no question
+                # ("Spotify?"), so a bare yes has to answer it.
+                if len(options) == 1 and any(w in text.lower() for w in CONFIRM_YES):
+                    await self._execute(options[0], None)
+                    return
+                chosen = self.registry.choose(text, options)
+                if chosen is not None:
+                    await self._execute(chosen, None)
+                    return
+                # Not an answer to the question. Fall through and treat it as a
+                # fresh utterance rather than insisting they answer.
+
         # A pending destructive action takes priority over everything else.
         if self._pending_confirm is not None:
             action, value = self._pending_confirm
@@ -326,13 +357,30 @@ class Assistant:
             await self._execute(match.action, match.value)
             return
 
-        # 2. Loose phrasing - let the router look at it.
+        # 2. Asked to open something, without saying what. Guessing which
+        #    application someone meant is the one place this should ask.
+        if self.registry.launch_intent(text):
+            await self._ask_which(self.registry.candidates(text))
+            return
+
+        # 3. Loose phrasing - let the router look at it.
         decision: Decision = await self.brain.route(text, self.registry.catalog)
         if decision.kind == "action" and decision.action in self.registry.actions:
             await self._execute(self.registry.actions[decision.action], decision.value)
             return
 
-        # 3. Not a command. Talk.
+        # 4. It was phrased as a request to open something, and nothing has
+        #    resolved it. Offer what it could have been rather than either
+        #    guessing or dropping into conversation about it. The launch-prefix
+        #    test is what keeps this out of ordinary chat: "open the music
+        #    thing" gets a question, "what is the weather" does not.
+        if has_launch_prefix(normalize(text)):
+            options = self.registry.candidates(text)
+            if options:
+                await self._ask_which(options)
+                return
+
+        # 5. Not a command. Talk.
         if self.brain.ready:
             await self.say_stream(self.brain.converse_stream(text))
             return
@@ -340,6 +388,27 @@ class Assistant:
             await self._execute(match.action, match.value)
             return
         await self.say("I have no action for that, and no reasoning core to improvise.")
+
+    async def _ask_which(self, options: list) -> None:
+        """Name the choices and wait for one.
+
+        Only ever the registry's own actions, so answering this cannot reach
+        anything that was not already configured - the same rule that stops
+        the model composing a command.
+        """
+        if not options:
+            await self.say("Nothing in the registry matches that.")
+            return
+        if len(options) == 1:
+            self._pending_choice = (options, time.monotonic() + CHOICE_TIMEOUT)
+            await self.say(f"{options[0].spoken.capitalize()}?")
+            return
+
+        named = [a.spoken for a in options]
+        spoken = ", ".join(named[:-1]) + ", or " + named[-1]
+        self._pending_choice = (options, time.monotonic() + CHOICE_TIMEOUT)
+        await self.bus.publish("choices", options=[a.name for a in options])
+        await self.say(f"Which. {spoken}.")
 
     async def _execute(self, action, value: str | None) -> None:
         if self.registry.needs_confirmation(action):
