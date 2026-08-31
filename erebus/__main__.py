@@ -628,7 +628,7 @@ def main(argv: list[str] | None = None) -> int:
                                  "voices", "fetch-voice", "brief",
                                  "archive", "examine", "domain", "cases",
                                  "audit", "security", "vault", "rotate-token",
-                                 "doctor", "calibrate"])
+                                 "doctor", "calibrate", "selftest"])
     parser.add_argument("text", nargs="*",
                         help="text for `say`, or a voice name for `fetch-voice`")
     parser.add_argument("--out", metavar="FILE",
@@ -684,6 +684,16 @@ def main(argv: list[str] | None = None) -> int:
         from . import doctor
 
         return asyncio.run(doctor.run(config))
+    if args.command == "selftest":
+        from . import selftest
+
+        print(BANNER)
+        if not args.verbose:
+            # The probes load models and open devices, and those stages are
+            # chatty. Their log lines interleave with the report and make it
+            # unreadable; -v puts them back when a probe needs explaining.
+            logging.getLogger().setLevel(logging.ERROR)
+        return asyncio.run(selftest.run(config))
     if args.command == "calibrate":
         return asyncio.run(cmd_calibrate(config, write=not args.dry))
     if args.command == "archive":

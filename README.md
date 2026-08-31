@@ -254,6 +254,28 @@ measured against all six stock models the word scores 0.000 — see
 [docs/WAKEWORD.md](docs/WAKEWORD.md) for the numbers and for training a real
 one. Until then, use the hotkey.
 
+### Installing
+
+```
+python install.py
+```
+
+Does the whole setup and stops at the first thing that needs a human, with the
+command to type. Safe to re-run; `--check` changes nothing. Standard library
+only, since it runs before anything is installed.
+
+### Proving it works
+
+```
+python -m erebus selftest
+```
+
+`doctor` checks that things are present; this runs them. It moves the volume
+and puts it back, registers and releases the hotkeys, opens the microphone,
+seals and unseals a vault value, then synthesises a command, transcribes it and
+routes it — with the clock running on each stage. `shutdown`, `restart`,
+`sleep` and `lock` are reported as wired but deliberately not executed.
+
 ### Calibration
 
 ```

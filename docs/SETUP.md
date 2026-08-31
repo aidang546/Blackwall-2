@@ -2,6 +2,32 @@
 
 Target: an NVIDIA RTX machine. Roughly 20 minutes, most of it downloads.
 
+## The short way
+
+```powershell
+winget install Python.Python.3.12 Ollama.Ollama
+git clone <this repo>; cd Blackwall-2
+python install.py
+```
+
+`install.py` does steps 1–6 below: the virtual environment, both requirement
+sets, the CUDA libraries if it finds an NVIDIA GPU, the voice model, and the
+Ollama model. It stops at the first thing that needs you and prints what to
+type. It is safe to re-run — every step checks whether it is already done, so
+a failed run continues rather than starting over. `--check` says what it would
+do without changing anything.
+
+Then, at the machine:
+
+```powershell
+.\.venv\Scripts\python -m erebus doctor      # what is missing
+.\.venv\Scripts\python -m erebus calibrate   # measures your room, ~30s
+.\.venv\Scripts\python -m erebus selftest    # proves it works, ~1 min
+```
+
+The rest of this page is the same thing done by hand, and what each step is
+for when one of them fails.
+
 ---
 
 ## 1. Python
@@ -282,6 +308,41 @@ as a fullscreen app with its own icon, and stays paired across relaunches.
 
 The token in that URL is a password. Anyone holding it, on your network, can
 run anything in your registry.
+
+---
+
+## Does it actually work
+
+`doctor` checks that things are *present*. `selftest` runs them:
+
+```powershell
+python -m erebus selftest
+```
+
+```
+  ok    volume                     read 34, set 60, restored
+  ok    volume via worker thread   read 34
+  ok    system actions             12 wired, 4 not exercised: lock, restart, shutdown, sleep
+  ok    apps                       8/8 resolve
+  ok    hotkey                     registered and released: ctrl+alt+space, ctrl+alt+x
+  ok    microphone                 15 frames, peak 0.0421 against a 0.0095 gate
+  ok    speech out                 118 ms to synthesise 1.4s (12x real time)
+  ok    speech in                  small.en on cuda in 2.1s
+  ok    transcription speed        190 ms for 1.4s of audio (7.4x)
+  ok    round trip                 'Lock the computer.' -> 'Lock the computer.' -> lock
+```
+
+It moves the volume and puts it back; `shutdown`, `restart`, `sleep` and
+`lock` are reported as wired but deliberately not run. The two volume probes
+are separate on purpose — handlers are dispatched through a thread pool, COM
+needs initialising per thread, and the difference between those two lines is
+the bug that otherwise appears as "CoInitialize has not been called" on your
+first spoken "volume up".
+
+The `apps` probe is worth reading: it checks whether each `run:` line points at
+something that exists on *your* machine, either an executable on PATH or a
+registered URI scheme. A name that does not resolve will silently do nothing
+when you say it.
 
 ---
 
