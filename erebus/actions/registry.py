@@ -64,6 +64,39 @@ def strip_prefixes(text: str) -> str:
     return text.strip()
 
 
+def phrase_forms(raw: str) -> list[str]:
+    """Every form of a configured phrase an utterance could arrive as.
+
+    Utterances go through `strip_prefixes` before matching, so "go to sleep"
+    reaches the matcher as "sleep". A phrase that *itself* starts with a launch
+    prefix therefore never matched anything: the stored form kept the prefix,
+    the spoken form lost it. Two shipped phrases were dead this way - "go to
+    sleep" and "start listening" - both listed by `erebus actions`, neither
+    working.
+
+    So both forms are stored. "sleep the computer" keeps working, and "go to
+    sleep" now matches whether the stripper touched it or not.
+    """
+    normalized = normalize(raw)
+    if not normalized:
+        return []
+    forms = [normalized]
+    stripped = strip_prefixes(normalized)
+    # A phrase that is *only* a prefix ("open") would strip to nothing.
+    if stripped and stripped != normalized:
+        forms.append(stripped)
+    return forms
+
+
+def phrase_list(raws) -> list[str]:
+    out: list[str] = []
+    for raw in raws:
+        for form in phrase_forms(raw):
+            if form not in out:
+                out.append(form)
+    return out
+
+
 @dataclass
 class Action:
     name: str
@@ -95,21 +128,21 @@ class Registry:
     def _load(self, config) -> None:
         for name, spec in (config.get("actions.apps") or {}).items():
             self.actions[name] = Action(
-                name, "app", [normalize(p) for p in spec.get("phrases", [name])], spec
+                name, "app", phrase_list(spec.get("phrases", [name])), spec
             )
         for name, spec in (config.get("actions.system") or {}).items():
             self.actions[name] = Action(
-                name, "system", [normalize(p) for p in (spec or {}).get("phrases", [name])],
+                name, "system", phrase_list((spec or {}).get("phrases", [name])),
                 spec or {},
             )
         for name, spec in (config.get("actions.macros") or {}).items():
             self.actions[name] = Action(
-                name, "macro", [normalize(p) for p in spec.get("phrases", [name])], spec
+                name, "macro", phrase_list(spec.get("phrases", [name])), spec
             )
         for name, spec in (config.get("actions.builtin") or {}).items():
             self.actions[name] = Action(
                 name, "builtin",
-                [normalize(p) for p in (spec or {}).get("phrases", [name])], spec or {},
+                phrase_list((spec or {}).get("phrases", [name])), spec or {},
             )
         log.info(
             "registry loaded: %d actions (%d apps, %d system, %d macros, %d builtin)",

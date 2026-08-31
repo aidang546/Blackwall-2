@@ -66,5 +66,52 @@ for utterance, want_action, want_value in CASES:
           f"{'   (wanted ' + str(want_action) + ')' if not ok else ''}")
 
 print(f"\n  {len(CASES) - failures}/{len(CASES)} passed")
+
+# ---------------------------------------------------------------------------
+# Every configured phrase must actually reach its action.
+#
+# Utterances are prefix-stripped before matching ("go to spotify" -> "spotify"),
+# and for a long time the stored phrases were not - so a phrase that itself
+# began with a launch prefix could never match. Two shipped ones were dead this
+# way: "go to sleep" and "start listening", both listed by `erebus actions`,
+# neither working. This walks the whole registry rather than spot-checking,
+# because the failure is invisible until someone says that exact phrase.
+
+print("\nEVERY CONFIGURED PHRASE REACHES ITS ACTION")
+_unreachable = []
+_total = 0
+for _action in reg.actions.values():
+    for _phrase in _action.phrases:
+        # volume_set needs a number to be a command at all; "volume to" alone
+        # deliberately defers, so it is not a dead phrase.
+        if _action.name == "volume_set":
+            continue
+        _total += 1
+        _hit = reg.match(_phrase)
+        if _hit is None or _hit.action.name != _action.name:
+            _unreachable.append(
+                f"{_action.name}: {_phrase!r} -> "
+                f"{_hit.action.name if _hit else 'nothing'}")
+
+for _line in _unreachable:
+    failures += 1
+    print(f"  FAIL  {_line}")
+print(f"  {'ok  ' if not _unreachable else 'FAIL'}  "
+      f"all {_total} configured phrases route to their own action")
+
+for _said, _want in [("go to sleep", "sleep"), ("sleep", "sleep"),
+                     ("start listening", "resume_listening"),
+                     ("go to spotify", "spotify"), ("open spotify", "spotify"),
+                     ("open", None), ("", None)]:
+    _hit = reg.match(_said)
+    _got = _hit.action.name if _hit else None
+    if _got != _want:
+        failures += 1
+    print(f"  {'ok  ' if _got == _want else 'FAIL'}  {_said!r:<20} -> {_got}"
+          f"{'   (wanted ' + str(_want) + ')' if _got != _want else ''}")
+
+if failures:
+    raise SystemExit(1)
+
 print(f"  confirmation-gated: {sorted(reg.confirm)}")
 sys.exit(1 if failures else 0)
