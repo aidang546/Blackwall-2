@@ -56,7 +56,14 @@ def run(command: list[str], check: bool = True) -> subprocess.CompletedProcess:
     # Always from the repo root: `-r requirements.txt` is a relative path and
     # `-m erebus` needs the package importable, and neither is true if this is
     # run from anywhere else - which `python C:\\...\\install.py` is.
-    result = subprocess.run(command, capture_output=True, text=True, cwd=ROOT)
+    # encoding is explicit because `text=True` alone decodes with the system
+    # locale, which on a British Windows install is cp1252. `ollama pull`
+    # draws its progress bar out of Unicode block characters that cp1252 has
+    # no mapping for, so the reader thread died with a UnicodeDecodeError
+    # mid-download - loudly enough to look like a failed install, while the
+    # pull itself carried on and succeeded.
+    result = subprocess.run(command, capture_output=True, cwd=ROOT,
+                            encoding="utf-8", errors="replace")
     if check and result.returncode != 0:
         tail = (result.stderr or result.stdout or "").strip().splitlines()
         detail = tail[-1] if tail else f"exit {result.returncode}"

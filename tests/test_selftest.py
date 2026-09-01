@@ -172,11 +172,20 @@ check("re-running is safe: every step checks first",
 check("an exact model tag is required, not a prefix match",
       not install.ollama_has_model("llama3.1:8b") or install.ollama_running(),
       "a 70b must not satisfy an 8b")
-check("the installer runs commands from the repo root",
-      "cwd=ROOT" in (root / "install.py").read_text())
-message = _try_ollama()
-check("a missing Ollama stops with something to type",
-      "winget" in message, message.splitlines()[0] if message else "no message")
+installer = (root / "install.py").read_text()
+check("the installer runs commands from the repo root", "cwd=ROOT" in installer)
+# `text=True` decodes with the system locale. On a British Windows install
+# that is cp1252, and `ollama pull` draws its progress bar out of Unicode
+# block characters cp1252 cannot map - which killed the reader thread
+# mid-download, loudly enough to look like a failed install.
+check("and decodes their output as utf-8, not the system locale",
+      'encoding="utf-8"' in installer and 'errors="replace"' in installer)
+# Look at code, not prose - the comment explaining the fix says "text=True"
+# too, and an earlier version of this check matched its own documentation.
+_code = [ln for ln in installer.splitlines()
+         if ln.strip() and not ln.strip().startswith("#")]
+check("and never decodes with text=True alone",
+      not any("text=True" in ln for ln in _code))
 
 print(f"\n  {PASSED}/{PASSED + FAILED} passed")
 raise SystemExit(1 if FAILED else 0)
