@@ -57,8 +57,31 @@ def _volume_interface():
         except Exception:  # noqa: BLE001 - already initialised on this thread
             pass
 
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        speakers = AudioUtilities.GetSpeakers()
+
+        # pycaw changed what this returns. Older releases hand back the
+        # IMMDevice COM pointer directly, which has .Activate; newer ones wrap
+        # it in an AudioDevice, and calling .Activate on that raises
+        #
+        #     AttributeError: 'AudioDevice' object has no attribute 'Activate'
+        #
+        # Unwrap when we have to, so both shapes work rather than pinning a
+        # pycaw version and breaking on whichever the operator happens to get.
+        device = speakers
+        if not hasattr(device, "Activate"):
+            for attribute in ("_dev", "_device", "device"):
+                inner = getattr(device, attribute, None)
+                if inner is not None and hasattr(inner, "Activate"):
+                    device = inner
+                    break
+            else:
+                raise RuntimeError(
+                    f"pycaw returned a {type(speakers).__name__} with no way "
+                    "to reach the COM device - this pycaw version is not one "
+                    "Erebus knows how to unwrap"
+                )
+
+        interface = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
         return cast(interface, POINTER(IAudioEndpointVolume))
     except Exception as exc:  # noqa: BLE001
         global VOLUME_ERROR

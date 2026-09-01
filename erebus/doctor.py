@@ -357,7 +357,35 @@ def check_windows() -> list[Check]:
         out.append(Check("volume control", FAIL, "pycaw not installed",
                          "pip install -r requirements-voice.txt"))
     else:
-        out.append(Check("volume control", PASS, "pycaw available"))
+        # "pycaw available" is not the same question as "the volume works" -
+        # it reported green on a machine where reaching the endpoint raised.
+        from .actions.system import VOLUME_ERROR, get_volume
+
+        level = get_volume()
+        if level is None:
+            out.append(Check("volume control", FAIL,
+                             f"pycaw installed but the endpoint failed"
+                             + (f" - {VOLUME_ERROR}" if VOLUME_ERROR else ""),
+                             "python -m erebus selftest exercises this properly."))
+        else:
+            out.append(Check("volume control", PASS, f"reads {level}"))
+
+    cuda = _module("nvidia")
+    if cuda is not None:
+        from .pipeline.stt import CUDA_DLL_DIRS
+
+        if CUDA_DLL_DIRS:
+            out.append(Check("cuda libraries", PASS,
+                             f"{len(CUDA_DLL_DIRS)} directories on the DLL path"))
+        else:
+            # Installed, and invisible to the loader: the exact shape of
+            # "cublas64_12.dll is not found" on a machine that has cuBLAS.
+            out.append(Check("cuda libraries", WARN,
+                             "the nvidia packages are installed but no DLL "
+                             "directory was found inside them",
+                             "Whisper will fall back to CPU. Reinstall inside "
+                             "the venv: pip install nvidia-cublas-cu12 "
+                             "nvidia-cudnn-cu12"))
     if shutil.which("powershell") is None:
         out.append(Check("powershell", WARN, "not on PATH",
                          "Needed only for the SAPI voice fallback."))
