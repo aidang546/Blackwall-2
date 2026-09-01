@@ -102,23 +102,43 @@ async def scenarios() -> int:
 
 
 def main() -> int:
+    # A log file rather than a PIPE. Nothing here ever reads the pipe, so once
+    # the server logged more than the buffer holds it would block on its own
+    # stdout and never finish starting - a hang that looks exactly like a slow
+    # machine, and gets blamed on one.
+    import tempfile
+
+    log = tempfile.NamedTemporaryFile("w+", suffix=".log", delete=False)
     server = subprocess.Popen(
         [sys.executable, "-m", "erebus", "--no-voice", "--no-window"],
         cwd=ROOT,
         env={**__import__("os").environ, "EREBUS_PORT": str(PORT)},
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        stdout=log, stderr=subprocess.STDOUT, text=True,
     )
     try:
-        # Wait for the port rather than sleeping a fixed amount.
+        # Wait for the port rather than sleeping a fixed amount. The budget is
+        # generous because this also runs on a machine busy doing something
+        # else - ten seconds was enough when idle and not when it was not.
         import socket
-        for _ in range(100):
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            if server.poll() is not None:
+                break
             with socket.socket() as probe:
                 if probe.connect_ex(("127.0.0.1", PORT)) == 0:
                     break
             time.sleep(0.1)
         else:
-            print("  FAIL  server never came up")
-            return 1
+            pass
+        with socket.socket() as probe:
+            if probe.connect_ex(("127.0.0.1", PORT)) != 0:
+                log.flush()
+                print("  FAIL  server never came up"
+                      + (f" (exited {server.returncode})"
+                         if server.poll() is not None else " within 30s"))
+                # Say why, rather than leaving the reader to reproduce it.
+                print(pathlib.Path(log.name).read_text()[-1500:])
+                return 1
 
         failures = asyncio.run(scenarios())
     finally:
