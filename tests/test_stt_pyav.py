@@ -42,8 +42,12 @@ def check(label: str, ok: bool, detail: str = "") -> None:
         print(f"  FAIL  {label:<50} {detail}")
 
 
-def run_with_blocked_av(body: str) -> subprocess.CompletedProcess:
-    """Run `body` in a fresh interpreter where importing `av` raises."""
+def run_with_blocked_av(body: str, leftover: str = "") -> subprocess.CompletedProcess:
+    """Run `body` in a fresh interpreter where importing `av` raises.
+
+    `leftover` injects extra setup - used to reproduce the half-built module a
+    mid-import DLL failure leaves behind.
+    """
     script = textwrap.dedent(f"""
         import sys, importlib.abc, importlib.machinery
         sys.path.insert(0, {str(ROOT)!r})
@@ -68,6 +72,7 @@ def run_with_blocked_av(body: str) -> subprocess.CompletedProcess:
         for _name in [n for n in sys.modules if n == "av" or n.startswith("av.")]:
             del sys.modules[_name]
         sys.meta_path.insert(0, _BlockAv())
+        {leftover}
 
         {body}
     """)
@@ -107,6 +112,33 @@ if "SKIP" in proc.stdout:
 else:
     check("a model loads and consumes an array", "DURATION 1.0" in proc.stdout,
           proc.stdout.strip() or proc.stderr.strip()[-160:])
+
+print("\nWHEN A FAILED IMPORT LEAVES A HALF-BUILT MODULE BEHIND")
+# A DLL that dies part-way through an extension module's init leaves a
+# partially-initialised module in sys.modules. The first version of the fix
+# used setdefault, which will not replace one - so the stand-in was never
+# installed and faster_whisper imported the broken remains instead.
+# `av` itself must still fail to import - the blocker above does that - while
+# stale submodules survive from the attempt, which is what Python leaves when
+# a DLL dies part-way through init.
+proc = run_with_blocked_av("""
+        from erebus.pipeline.stt import STT_AVAILABLE, PYAV_BLOCKED
+        import sys
+        print("AVAILABLE", STT_AVAILABLE)
+        print("BLOCKED", PYAV_BLOCKED)
+        print("STANDIN", type(sys.modules["av"]).__name__)
+        print("SUBMODULE", type(sys.modules["av.audio"]).__name__)
+""", leftover=(
+    'import types\n'
+    '        sys.modules["av.audio"] = types.ModuleType("av.audio")\n'
+    '        sys.modules["av.codec"] = types.ModuleType("av.codec")'
+))
+check("whisper still imports", "AVAILABLE True" in proc.stdout,
+      proc.stdout.strip() or proc.stderr.strip()[-200:])
+check("the stand-in replaced the module", "STANDIN _Absent" in proc.stdout,
+      proc.stdout.strip())
+check("and the stale submodules were purged too",
+      "SUBMODULE _Absent" in proc.stdout, proc.stdout.strip())
 
 print("\nWHEN PyAV IS FINE, NOTHING IS TOUCHED")
 proc = subprocess.run(

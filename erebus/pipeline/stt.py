@@ -55,9 +55,20 @@ def _neutralise_pyav() -> bool:
                     "not need it, but decoding audio files does."
                 )
 
+        # Purge first, and assign rather than setdefault. A DLL that fails
+        # part-way through an extension module's init leaves a half-built
+        # module behind in sys.modules - `import av` above got far enough to
+        # register one before dying. setdefault will not replace that, so the
+        # stand-in was never installed and faster_whisper went on to import the
+        # broken partial module instead.
+        for name in [n for n in list(sys.modules)
+                     if n == "av" or n.startswith("av.")]:
+            del sys.modules[name]
         for name in ("av", "av.audio", "av.audio.frame", "av.audio.codeccontext",
-                     "av.codec", "av.codec.codec", "av.frame"):
-            sys.modules.setdefault(name, _Absent(name))
+                     "av.codec", "av.codec.codec", "av.frame", "av.container",
+                     "av.video", "av.video.frame", "av.error", "av.packet",
+                     "av.stream"):
+            sys.modules[name] = _Absent(name)
         log.warning(
             "PyAV could not load (%s) - substituting a stand-in. Speech "
             "recognition is unaffected; only decoding audio files is.", exc,
