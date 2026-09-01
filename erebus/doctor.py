@@ -133,11 +133,20 @@ def check_microphone(config) -> list[Check]:
 
 
 def check_stt() -> Check:
-    from .pipeline.stt import STT_AVAILABLE
+    from .pipeline.stt import PYAV_BLOCKED, STT_AVAILABLE
 
     if not STT_AVAILABLE:
-        return Check("speech in", FAIL, "faster-whisper not installed",
-                     "pip install -r requirements-voice.txt")
+        return Check("speech in", FAIL, "faster-whisper will not import",
+                     "pip install -r requirements-voice.txt   (if it is already "
+                     "installed, run: python -m erebus doctor -v for the reason)")
+    if PYAV_BLOCKED:
+        # Worth saying out loud rather than leaving in a log: the operator sees
+        # a security prompt or a blocked file and needs to know it was handled.
+        return Check("speech in", PASS,
+                     "faster-whisper installed (PyAV is blocked on this machine "
+                     "and was routed around)",
+                     "Nothing to do. PyAV only decodes audio files, which "
+                     "Erebus does not use.")
 
     # Report whether CUDA will actually be used, without loading a model -
     # loading one here would make `doctor` take a minute.

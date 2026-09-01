@@ -417,6 +417,15 @@ The matcher already absorbs close misses (Whisper hearing "coming mode" for
 "gaming mode" still routes correctly), so if something consistently fails, add
 the way it actually gets transcribed as another entry under `phrases:`.
 
+**`An Application Control policy has blocked this file`, importing Whisper.**
+Smart App Control - on by default on new Windows 11 machines - blocks PyAV's
+bundled, unsigned FFmpeg DLLs, and `faster_whisper` imports PyAV at module
+level. Erebus handles this itself: PyAV only exists to decode audio *files*,
+and Erebus hands Whisper an array it captured, so a stand-in is substituted and
+speech recognition is unaffected. `doctor` says so when it happens. You do not
+need to turn Smart App Control off - and should not, since it cannot be turned
+back on without reinstalling Windows.
+
 **A voice model fails to load with a protobuf error.** The download was
 truncated. Delete it from `models/` and re-run `fetch-voice`, which verifies
 the length and resumes.

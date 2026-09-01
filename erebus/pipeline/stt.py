@@ -14,6 +14,59 @@ import time
 
 log = logging.getLogger("erebus.stt")
 
+def _neutralise_pyav() -> bool:
+    """Stop `faster_whisper` dragging PyAV in, because we never use it.
+
+    faster_whisper imports `av` at module level, purely for `decode_audio` -
+    the helper that turns an audio *file* into samples. Erebus hands the model
+    a numpy array it captured itself and never calls that path, so the import
+    is pure cost.
+
+    It is worse than cost on Windows. PyAV ships bundled, unsigned FFmpeg DLLs,
+    and Smart App Control - on by default on new Windows 11 machines - blocks
+    them:
+
+        ImportError: DLL load failed while importing hwaccel:
+        An Application Control policy has blocked this file.
+
+    That kills the whole of faster_whisper, so Erebus loses its hearing over a
+    dependency it does not use. The alternative fix is for the operator to
+    disable Smart App Control, which cannot be undone without reinstalling
+    Windows - a bad trade for a module we do not want.
+
+    So: import `av` first. If it works, leave everything alone. If it is
+    blocked, put a stand-in in its place so the import inside faster_whisper
+    succeeds. Anything that actually touches PyAV then raises, which is
+    correct - decoding an audio file genuinely is unavailable - but
+    transcribing an array, the only thing we do, works.
+    """
+    import sys
+
+    try:
+        import av  # noqa: F401
+        return False
+    except Exception as exc:  # noqa: BLE001 - a blocked DLL is not an ImportError
+        import types
+
+        class _Absent(types.ModuleType):
+            def __getattr__(self, name):
+                raise ImportError(
+                    f"PyAV is unavailable on this machine ({exc}). Erebus does "
+                    "not need it, but decoding audio files does."
+                )
+
+        for name in ("av", "av.audio", "av.audio.frame", "av.audio.codeccontext",
+                     "av.codec", "av.codec.codec", "av.frame"):
+            sys.modules.setdefault(name, _Absent(name))
+        log.warning(
+            "PyAV could not load (%s) - substituting a stand-in. Speech "
+            "recognition is unaffected; only decoding audio files is.", exc,
+        )
+        return True
+
+
+PYAV_BLOCKED = _neutralise_pyav()
+
 try:  # pragma: no cover - optional heavy dep
     from faster_whisper import WhisperModel
 
