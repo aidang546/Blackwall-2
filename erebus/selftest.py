@@ -76,8 +76,14 @@ def probe_volume() -> list[Probe]:
 
     before = get_volume()
     if before is None:
-        return [Probe("volume", FAIL, "no audio endpoint",
-                      "pip install pycaw comtypes, then re-run.")]
+        from .actions.system import VOLUME_ERROR
+
+        return [Probe("volume", FAIL,
+                      f"no audio endpoint - {VOLUME_ERROR}" if VOLUME_ERROR
+                      else "no audio endpoint",
+                      "If that names COM or a device, the endpoint is the "
+                      "problem, not a missing package - check which output "
+                      "device Windows has set as default.")]
 
     target = 40 if before > 50 else 60
     set_volume(target)
@@ -110,6 +116,13 @@ async def probe_worker_volume() -> list[Probe]:
     loop = asyncio.get_running_loop()
     value = await loop.run_in_executor(None, get_volume)
     if value is None:
+        # Only meaningful if the main thread managed it. Saying "worked on the
+        # main thread" when that failed too is simply false, and it sent the
+        # reader hunting for a threading bug that was not there.
+        if get_volume() is None:
+            return [Probe("volume via worker thread", SKIP,
+                          "not tested - the endpoint failed on the main "
+                          "thread too")]
         return [Probe("volume via worker thread", FAIL,
                       "worked on the main thread, failed on a worker",
                       "This is the COM initialisation path - every spoken "

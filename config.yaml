@@ -41,6 +41,9 @@ audio:
 # the startup log says so rather than failing silently.
 hotkey:
   enabled: true
+  # ctrl+alt+space is commonly taken - NVIDIA's overlay, Discord's
+  # push-to-talk and several IMEs all claim it. `selftest` says so if
+  # something else already owns yours; pick another and re-run.
   talk: "ctrl+alt+space"
   interrupt: "ctrl+alt+x"
 

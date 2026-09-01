@@ -426,6 +426,18 @@ speech recognition is unaffected. `doctor` says so when it happens. You do not
 need to turn Smart App Control off - and should not, since it cannot be turned
 back on without reinstalling Windows.
 
+**`Library cublas64_12.dll is not found or cannot be loaded`.** The CUDA
+wheels put their DLLs inside site-packages rather than on PATH, and since
+Python 3.8 Windows searches an explicit list rather than PATH. Erebus adds
+those directories itself at import, so this should not happen - if it does,
+`pip install nvidia-cublas-cu12 nvidia-cudnn-cu12` inside the venv, not
+globally.
+
+**`hotkey already owned by another program`.** Something else registered it
+first - NVIDIA's overlay, Discord's push-to-talk and several IMEs all like
+ctrl+alt+space. Pick another combo under `hotkey:` in config.local.yaml and
+re-run `selftest`.
+
 **A voice model fails to load with a protobuf error.** The download was
 truncated. Delete it from `models/` and re-run `fetch-voice`, which verifies
 the length and resumes.

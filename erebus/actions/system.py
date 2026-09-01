@@ -16,6 +16,11 @@ log = logging.getLogger("erebus.system")
 
 IS_WINDOWS = sys.platform == "win32"
 
+#: Why the audio endpoint could not be reached, if it could not. Kept because
+#: the exception is caught here, and "no audio endpoint" on its own sent one
+#: operator to reinstall a package that was already installed.
+VOLUME_ERROR = ""
+
 # Virtual key codes for the media keys the keyboard driver already understands.
 VK_MEDIA_NEXT = 0xB0
 VK_MEDIA_PREV = 0xB1
@@ -56,10 +61,10 @@ def _volume_interface():
         interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
         return cast(interface, POINTER(IAudioEndpointVolume))
     except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "audio endpoint unavailable (%s: %s) - volume control disabled",
-            type(exc).__name__, exc,
-        )
+        global VOLUME_ERROR
+        VOLUME_ERROR = f"{type(exc).__name__}: {exc}"
+        log.warning("audio endpoint unavailable (%s) - volume control disabled",
+                    VOLUME_ERROR)
         return None
 
 

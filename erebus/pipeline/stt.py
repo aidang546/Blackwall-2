@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import pathlib
 import time
 
 log = logging.getLogger("erebus.stt")
@@ -75,6 +76,48 @@ def _neutralise_pyav() -> bool:
         )
         return True
 
+
+def _add_nvidia_dll_path() -> list[str]:
+    """Put the pip-installed CUDA libraries where Windows will look for them.
+
+    `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12` drops the DLLs inside
+    site-packages, not on PATH, and CTranslate2 loads them by bare name. On
+    Linux the wheels set an rpath and it resolves; on Windows nothing does, so
+    a machine with both packages correctly installed still fails with
+
+        RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
+
+    which reads as "CUDA is missing" when the truth is "CUDA is installed
+    somewhere nobody told Windows about". Since 3.8 the DLL search path is not
+    PATH but an explicit list, so the directories have to be added by hand.
+    """
+    import os
+    import sys
+
+    if sys.platform != "win32":
+        return []
+    added: list[str] = []
+    try:
+        import nvidia
+    except ImportError:
+        return []
+    for root in getattr(nvidia, "__path__", []):
+        base = pathlib.Path(root)
+        for lib in sorted(base.iterdir()) if base.exists() else []:
+            binary = lib / "bin"
+            if binary.is_dir():
+                try:
+                    os.add_dll_directory(str(binary))
+                    added.append(str(binary))
+                except (OSError, AttributeError):
+                    continue
+    if added:
+        log.info("added %d NVIDIA library directories to the DLL search path",
+                 len(added))
+    return added
+
+
+CUDA_DLL_DIRS = _add_nvidia_dll_path()
 
 PYAV_BLOCKED = _neutralise_pyav()
 
