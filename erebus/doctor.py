@@ -133,12 +133,19 @@ def check_microphone(config) -> list[Check]:
 
 
 def check_stt() -> Check:
-    from .pipeline.stt import PYAV_BLOCKED, STT_AVAILABLE
+    from .pipeline.stt import PYAV_BLOCKED, STT_AVAILABLE, STT_IMPORT_ERROR
 
     if not STT_AVAILABLE:
-        return Check("speech in", FAIL, "faster-whisper will not import",
-                     "pip install -r requirements-voice.txt   (if it is already "
-                     "installed, run: python -m erebus doctor -v for the reason)")
+        if STT_IMPORT_ERROR:
+            # Say what actually went wrong. "not installed" sent the operator
+            # to reinstall a package that was installed the whole time.
+            return Check("speech in", FAIL,
+                         f"faster-whisper will not import - {STT_IMPORT_ERROR}",
+                         "If that names a DLL or a policy, it is the operating "
+                         "system blocking a bundled library, not a missing "
+                         "package.")
+        return Check("speech in", FAIL, "faster-whisper not installed",
+                     "pip install -r requirements-voice.txt")
     if PYAV_BLOCKED:
         # Worth saying out loud rather than leaving in a log: the operator sees
         # a security prompt or a blocked file and needs to know it was handled.

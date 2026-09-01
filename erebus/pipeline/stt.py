@@ -78,13 +78,21 @@ def _neutralise_pyav() -> bool:
 
 PYAV_BLOCKED = _neutralise_pyav()
 
+#: Why faster_whisper would not load, if it would not. Kept because the
+#: exception is caught here and would otherwise be invisible: `doctor` could
+#: only report "will not import" and send the operator to reinstall a package
+#: that was already installed.
+STT_IMPORT_ERROR = ""
+
 try:  # pragma: no cover - optional heavy dep
     from faster_whisper import WhisperModel
 
     STT_AVAILABLE = True
-except ImportError:  # pragma: no cover
+except Exception as _exc:  # noqa: BLE001 - a blocked DLL is not an ImportError
     WhisperModel = None  # type: ignore[assignment]
     STT_AVAILABLE = False
+    STT_IMPORT_ERROR = f"{type(_exc).__name__}: {_exc}"
+    log.error("faster-whisper unavailable - %s", STT_IMPORT_ERROR)
 
 
 class Transcriber:
