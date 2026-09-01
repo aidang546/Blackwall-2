@@ -603,11 +603,15 @@ def open_window(url: str) -> None:
     App mode matters here - browser chrome around a full-bleed red wall ruins
     the effect entirely.
     """
-    import shutil
     import subprocess
 
+    from .windows import find_executable
+
+    # Not shutil.which alone: neither Chrome nor Edge puts itself on PATH, so
+    # every Windows machine fell through to a plain browser tab - URL bar,
+    # tabs and all - which is precisely the effect app mode exists to avoid.
     for browser in ("chrome", "msedge", "chromium", "brave"):
-        path = shutil.which(browser)
+        path = find_executable(browser)
         if path:
             try:
                 subprocess.Popen(

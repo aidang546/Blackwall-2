@@ -224,9 +224,9 @@ def _resolves(target: str) -> bool:
     """
     if ":" in target and target[1:2] != ":":           # spotify:, steam://
         return _scheme_registered(target.split(":", 1)[0])
-    if shutil.which(target) is not None:
-        return True
-    return _in_app_paths(target)
+    from .windows import is_installed
+
+    return is_installed(target)
 
 
 def _scheme_registered(scheme: str) -> bool:
@@ -240,25 +240,6 @@ def _scheme_registered(scheme: str) -> bool:
         return True
     except OSError:
         return False
-
-
-def _in_app_paths(name: str) -> bool:
-    """The registry list the shell searches that PATH does not include."""
-    if sys.platform != "win32":
-        return False
-    import winreg
-
-    if not name.lower().endswith(".exe"):
-        name += ".exe"
-    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-        try:
-            path = (r"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths"
-                    "\\" + name)
-            with winreg.OpenKey(root, path):
-                return True
-        except OSError:
-            continue
-    return False
 
 
 def probe_hotkey(config) -> list[Probe]:
