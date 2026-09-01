@@ -306,6 +306,15 @@ configured, exactly as the model cannot compose one. And it stays out of
 ordinary conversation — "open the music thing" gets a question, "what is the
 weather" gets an answer.
 
+### Starting it
+
+`Erebus.bat` - double-click, no console window. `Erebus (console).bat` for the
+same thing with the log visible. Pin either to the taskbar; both work from
+anywhere. Or run it from a shell with `python -m erebus`.
+
+Task Scheduler starts it at logon if you want it always there - see
+[docs/SETUP.md](docs/SETUP.md).
+
 ### Reaching it
 
 `ctrl+alt+space` from any window: tap, speak, done. `ctrl+alt+x` stops it

@@ -264,7 +264,29 @@ phrase you have configured.
 
 ---
 
-## 10. Autostart
+## 10. Starting it without a terminal
+
+PowerShell is only how you *launch* it. Once it is running you reach it with
+the hotkey from any window, and the wall opens on its own - the terminal is
+not part of using it.
+
+Two launchers sit in the repository root:
+
+| file | does |
+|---|---|
+| `Erebus.bat` | starts it with **no console window** |
+| `Erebus (console).bat` | same, with the log on screen - use when something is wrong |
+
+Double-click either. Right-click `Erebus.bat` and *Pin to Start* or *Create
+shortcut* for the desktop or taskbar. Both work from anywhere, so a shortcut
+does not need to know where the folder is.
+
+Give the shortcut an icon from `erebus/server/static/` if you want it to look
+like something.
+
+---
+
+## 11. Autostart
 
 Task Scheduler, so it survives reboots and starts before you log in to
 anything else.
@@ -283,7 +305,7 @@ Register-ScheduledTask -TaskName "Erebus" -Action $action -Trigger $trigger `
 
 ---
 
-## 11. Your phone
+## 12. Your phone
 
 ```powershell
 python -m erebus pair
