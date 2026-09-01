@@ -498,21 +498,35 @@ async def run(config) -> int:
     print("\n  Running things rather than checking they are installed.")
     print("  Volume is moved and put back; nothing else is changed.\n")
 
+    # Printed as each one finishes, not collected and printed at the end.
+    # These probes touch COM, audio drivers and GPU libraries - things that can
+    # take the whole process down without raising anything Python can catch -
+    # and the first version showed a banner and then nothing at all when that
+    # happened. A report you only get if everything survives is no use on the
+    # run where something does not.
     probes: list[Probe] = []
-    probes += await _guarded("volume", probe_volume)
-    probes += await _guarded("volume via worker thread", probe_worker_volume)
-    probes += await _guarded("system actions", lambda: probe_handlers(config))
-    probes += await _guarded("apps", lambda: probe_apps(config))
-    probes += await _guarded("hotkey", lambda: probe_hotkey(config))
-    probes += await _guarded("microphone", lambda: probe_audio_devices(config))
-    probes += await _guarded("vault", lambda: probe_vault(config))
-    probes += await _guarded("voice", lambda: probe_voice(config))
-
-    for probe in probes:
-        mark = {PASS: "  ok  ", WARN: "  warn", FAIL: "  FAIL", SKIP: "  --  "}[probe.state]
-        print(f"{mark}  {probe.name:<26} {probe.detail}")
-        if probe.fix:
-            print(f"          {'':<26} -> {probe.fix}")
+    for name, thunk in (
+        ("volume", probe_volume),
+        ("volume via worker thread", probe_worker_volume),
+        ("system actions", lambda: probe_handlers(config)),
+        ("apps", lambda: probe_apps(config)),
+        ("hotkey", lambda: probe_hotkey(config)),
+        ("microphone", lambda: probe_audio_devices(config)),
+        ("vault", lambda: probe_vault(config)),
+        ("voice", lambda: probe_voice(config)),
+    ):
+        # No progress marker. A carriage-return one has to fight both the log
+        # lines these probes emit and being piped to a file, and loses to both
+        # - it left half of itself on every row. Flushing each result as it
+        # lands is what actually matters here.
+        found = await _guarded(name, thunk)
+        probes += found
+        for probe in found:
+            mark = {PASS: "  ok  ", WARN: "  warn",
+                    FAIL: "  FAIL", SKIP: "  --  "}[probe.state]
+            print(f"{mark}  {probe.name:<26} {probe.detail}", flush=True)
+            if probe.fix:
+                print(f"          {'':<26} -> {probe.fix}", flush=True)
 
     failed = [p for p in probes if p.state == FAIL]
     warned = [p for p in probes if p.state == WARN]
