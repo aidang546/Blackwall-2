@@ -60,6 +60,21 @@ check("and warns that the ratio is too low", any("4x" in n for n in notes))
 gate, _ = cal.derive_gate(0.02, 0.09)
 check("the gate never rises above quiet speech", gate <= 0.09 * 0.35, f"{gate}")
 
+# The first real run measured speech at 0.0005 - the operator had turned
+# their interface gain down, reading "stay quiet" as "make it quiet" - and the
+# gate came back as 0.002. Four times louder than the speaker: a gate that
+# could never open. The absolute floor was being applied last, overriding the
+# measurement it exists to back up.
+gate, notes = cal.derive_gate(0.0001, 0.0005)
+check("a gate is never placed above the voice it must hear",
+      gate < 0.0005, f"{gate} against speech of 0.0005")
+check("and it says the microphone is too quiet to trust",
+      any("gain" in n for n in notes))
+check("naming the level a healthy one reaches",
+      any("0.02" in n for n in notes))
+check("a healthy microphone still gets the floor",
+      cal.derive_gate(0.0, 0.05)[0] == cal.FLOOR, str(cal.derive_gate(0.0, 0.05)[0]))
+
 gate, notes = cal.derive_gate(0.004, 0.0)
 check("no speech measured still gives a gate", gate > 0, f"{gate}")
 check("and says so", any("No speech" in n for n in notes))

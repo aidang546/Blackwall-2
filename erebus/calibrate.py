@@ -34,6 +34,14 @@ GATE_HEADROOM = 2.5
 #: microphone is picking up more room than person.
 USABLE_SNR = 4.0
 
+#: The gate never sits below this unless the measurement demands it - a silent
+#: room would otherwise produce a gate of zero, which never closes.
+FLOOR = 0.002
+
+#: Below this, speech is too quiet to work with whatever the gate is set to.
+#: An audio interface with its gain turned down lands here.
+TOO_QUIET = 0.02
+
 
 @dataclass
 class Reading:
@@ -85,6 +93,13 @@ def derive_gate(noise: float, speech: float) -> tuple[float, list[str]]:
     if speech <= 0:
         return max(gate, 0.004), ["No speech was measured - keeping a cautious gate."]
 
+    if speech < TOO_QUIET:
+        notes.append(
+            f"Speech peaked at {speech:.4f}. That is very low - a healthy "
+            f"microphone puts normal speech above {TOO_QUIET}. Check the input "
+            "gain before trusting anything below."
+        )
+
     snr = speech / max(noise, 1e-9)
     if snr < USABLE_SNR:
         notes.append(
@@ -101,7 +116,23 @@ def derive_gate(noise: float, speech: float) -> tuple[float, list[str]]:
             "The noise floor is close to speech level, so the gate was placed "
             "by your voice rather than by the room."
         )
-    return round(max(gate, 0.002), 4), notes
+
+    # The absolute floor exists so a silent room does not produce a gate of
+    # zero. It must not override the measurement: applied last, it once
+    # returned 0.002 for a microphone whose speech measured 0.0005 - a gate
+    # four times louder than the speaker, which would never open at all.
+    if gate < FLOOR:
+        if speech >= FLOOR / 0.35:
+            gate = FLOOR
+        else:
+            notes.append(
+                f"Your microphone is very quiet - speech measured {speech:.4f}, "
+                "where a healthy level is above 0.02. Turn the input gain up "
+                "(on an audio interface that is a physical knob) and run this "
+                "again. The gate below is the best that can be done with this "
+                "signal, and it will be fragile."
+            )
+    return round(max(gate, 1e-4), 4), notes
 
 
 def derive_barge_in(gate: float, speech: float, echo: float) -> tuple[dict, list[str]]:
@@ -243,6 +274,8 @@ async def measure(config, speak) -> Result:
     result = Result()
     sample_rate = int(config.get("audio.sample_rate", 16000))
 
+    print("\n  Set your microphone the way you will actually use it - this")
+    print("  measures what it hears, so changing the gain afterwards undoes it.")
     print("\n  Looking for a microphone that is actually connected.")
     levels, names = await _probe_devices(sample_rate)
     device, notes = choose_device(levels, names)
@@ -264,14 +297,19 @@ async def measure(config, speak) -> Result:
                 f"({type(exc).__name__}: {exc}).")
             return None
 
-    _countdown("Stay quiet. Measuring the room.", 3)
+    # "Stay quiet" was read, reasonably, as "make it quiet" - and the first
+    # person to run this turned their interface gain down for it, which
+    # invalidated every measurement after it. Say what not to do.
+    _countdown("Don't speak - just let the room be. Leave your microphone "
+               "settings alone.", 3)
     quiet = await capture(3.0, "the room")
     if quiet is None:
         return result
     noise = result.add(Reading("room noise", percentile_rms(quiet, 0.9), len(quiet),
                                "90th percentile, so one noise does not set it"))
 
-    _countdown('Now speak normally - say "Erebus, open the browser" a few times.', 3)
+    _countdown('Now speak normally, at the distance and volume you actually '
+               'use - say "Erebus, open the browser" a few times.', 3)
     spoken = await capture(5.0, "your voice")
     if spoken is None:
         return result
@@ -283,7 +321,7 @@ async def measure(config, speak) -> Result:
     result.warnings += notes
 
     print("\n  Now measuring how much of its own voice comes back to the mic.")
-    print("  Stay quiet while it talks.\n")
+    print("  Don't speak while it talks.\n")
     echo_task = asyncio.create_task(_levels(6.0, device=device, sample_rate=sample_rate))
     await asyncio.sleep(0.3)
     spoke = True
