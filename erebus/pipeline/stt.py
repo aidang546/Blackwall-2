@@ -77,6 +77,9 @@ def _neutralise_pyav() -> bool:
         return True
 
 
+_DLL_HANDLES: list = []
+
+
 def _add_nvidia_dll_path() -> list[str]:
     """Put the pip-installed CUDA libraries where Windows will look for them.
 
@@ -105,15 +108,25 @@ def _add_nvidia_dll_path() -> list[str]:
         base = pathlib.Path(root)
         for lib in sorted(base.iterdir()) if base.exists() else []:
             binary = lib / "bin"
-            if binary.is_dir():
-                try:
-                    os.add_dll_directory(str(binary))
-                    added.append(str(binary))
-                except (OSError, AttributeError):
-                    continue
+            if not binary.is_dir():
+                continue
+            try:
+                # The handle has to outlive this function. add_dll_directory
+                # returns an object that *removes* the directory again when it
+                # is collected, so keeping only the path string added three
+                # directories and then dropped all three before anything tried
+                # to load a DLL from them - which looks identical to never
+                # having added them at all.
+                _DLL_HANDLES.append(os.add_dll_directory(str(binary)))
+                added.append(str(binary))
+            except (OSError, AttributeError):
+                continue
     if added:
-        log.info("added %d NVIDIA library directories to the DLL search path",
-                 len(added))
+        found = sorted({dll.name for path in added
+                        for dll in pathlib.Path(path).glob("*.dll")})
+        log.info("added %d NVIDIA library directories to the DLL search path "
+                 "(%d DLLs, cublas: %s)", len(added), len(found),
+                 any(name.startswith("cublas") for name in found))
     return added
 
 
